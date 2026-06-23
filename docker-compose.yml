@@ -1,0 +1,9 @@
+services:
+  d2r-traderie:
+    build: .
+    restart: always
+    ports:
+      - "7432:7432"
+    volumes:
+      - ./serviceAccount.json:/app/serviceAccount.json:ro
+    shm_size: '512mb'
