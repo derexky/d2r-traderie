@@ -9,12 +9,14 @@ export type Mode = 'sc' | 'hc';
 
 interface Combo { ladder: boolean; mode: Mode }
 
-// SC trades far more than HC, so SC syncs every run and each HC combo every 6th run (3h), staggered
+// SC syncs every run; HC alternates ladder (:00 run) and nonladder (:30 run) so each refreshes hourly.
+// Keyed off executed runs, not the clock, so a long run that skips the next tick can't starve one HC combo
 function combosForRun(run: number): Combo[] {
-  const combos: Combo[] = [{ ladder: true, mode: 'sc' }, { ladder: false, mode: 'sc' }];
-  if (run % 6 === 0) combos.push({ ladder: true, mode: 'hc' });
-  if (run % 6 === 3) combos.push({ ladder: false, mode: 'hc' });
-  return combos;
+  return [
+    { ladder: true, mode: 'sc' },
+    { ladder: false, mode: 'sc' },
+    { ladder: run % 2 === 0, mode: 'hc' },
+  ];
 }
 
 // Traderie returns 50 listings per page
@@ -52,7 +54,8 @@ export class PricesService implements OnModuleInit {
   private readonly log = new Logger(PricesService.name);
   private db!: DatabaseSync;
   private syncing = false;
-  private run = 0;
+  // Seed so the first run after startup lines up: next tick :00 → even (ladder HC), :30 → odd
+  private run = new Date().getMinutes() < 30 ? 1 : 0;
 
   onModuleInit() {
     const path = process.env.DB_PATH ?? 'data/traderie.db';
@@ -96,7 +99,7 @@ export class PricesService implements OnModuleInit {
           } catch (err) {
             this.log.error(`Failed [${item}] ${comboKey(combo)}: ${(err as Error).message}`);
           }
-          await delay(5000);
+          await delay(3000);
         }
       }
     } finally {
@@ -119,10 +122,11 @@ export class PricesService implements OnModuleInit {
     const key = comboKey(combo);
     // Traderie pages are 0-indexed
     const page1 = await fetchPage(0);
-    // Only go to the next page when page 0 is full and entirely unseen, i.e. there may be a gap
+    // Only go to the next page when page 0 is full and entirely unseen, i.e. there may be a gap.
+    // HC never does: one page already spans weeks of HC trades
     const exists = this.db.prepare('SELECT 1 FROM price_listings WHERE item = ? AND combo = ? AND id = ?');
     let page2: RawListing[] = [];
-    if (page1.length >= PAGE_SIZE && !page1.some((l) => exists.get(item, key, String(l.id)))) {
+    if (combo.mode === 'sc' && page1.length >= PAGE_SIZE && !page1.some((l) => exists.get(item, key, String(l.id)))) {
       await delay(3000);
       page2 = await fetchPage(1);
     }

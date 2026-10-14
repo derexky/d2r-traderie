@@ -24,6 +24,8 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
   private browser: Browser | null = null;
   private page: Page | null = null;
   private hasAuth = false;
+  // Bearer token the Traderie frontend attaches to its API calls, replayed on in-page fetches
+  private authHeader: string | null = null;
 
   async onModuleInit() {
     this.browser = await chromium.launch({
@@ -68,6 +70,10 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
       this.page = await context.newPage();
+      this.page.on('request', (r) => {
+        const a = r.headers().authorization;
+        if (a && r.url().includes('/api/')) this.authHeader = a;
+      });
       this.log.log('Navigating to traderie.com...');
 
       // Visit home first, then a search URL to establish cf_clearance for search paths
@@ -109,6 +115,39 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
     return data;
   }
 
+  // Call the API from inside the page: reuses its Cloudflare clearance and session without a full
+  // navigation, which is ~5x faster. On a Cloudflare block or a broken page, re-establish the page once
+  private async fetchApi(path: string): Promise<unknown> {
+    for (let attempt = 0; ; attempt++) {
+      const page = await this.getPage();
+      const res = await page
+        .evaluate(async ({ path, auth }) => {
+          const r = await fetch(path, { headers: auth ? { authorization: auth } : {} });
+          return { status: r.status, body: await r.text() };
+        }, { path, auth: this.authHeader })
+        .catch((err: Error) => ({ status: 0, body: err.message }));
+
+      if (res.status === 401) {
+        throw new UnauthorizedException(`Traderie session missing or expired — run scripts/login.ts and copy ${AUTH_STATE}`);
+      }
+      if (res.status === 200) {
+        try {
+          const data = JSON.parse(res.body) as unknown;
+          this.log.log(`Fetched ${path} → 200`);
+          await this.saveAuth();
+          return data;
+        } catch { /* HTML challenge page served with 200 — fall through to retry */ }
+      }
+      if (attempt > 0) throw new Error(`Traderie API ${res.status}: ${res.body.slice(0, 100)}`);
+      this.log.warn(`Traderie API ${res.status}, re-opening page and retrying`);
+      await page.context().close();
+    }
+  }
+
+  private listingsPath(search: string, page: number, extra: string) {
+    return `/api/diablo2resurrected/listings?itemTags=true&selling=true&auction=false&page=${page}&priceValues=true&search=${encodeURIComponent(search)}${extra}`;
+  }
+
   private buildFilters(opts: ListingFilters): string {
     // Traderie only honors prop_* filters; bare mode/ladder/ethereal are silently ignored
     const parts = ['prop_Platform=PC'];
@@ -125,17 +164,10 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
   }
 
   async fetchListings(search: string, page = 0, filters: ListingFilters = {}) {
-    const encoded = encodeURIComponent(search);
-    const pattern = /\/api\/diablo2resurrected\/listings\?.*search=/;
-    const triggerUrl = `https://traderie.com/diablo2resurrected?search=${encoded}&page=${page}${this.buildFilters(filters)}`;
-    return this.interceptApiResponse(pattern, triggerUrl);
+    return this.fetchApi(this.listingsPath(search, page, this.buildFilters(filters)));
   }
 
   async fetchCompletedListings(search: string, page = 0, filters: ListingFilters = {}) {
-    const encoded = encodeURIComponent(search);
-    const pattern =
-      /\/api\/diablo2resurrected\/listings\?.*search=.*completed=true/;
-    const triggerUrl = `https://traderie.com/diablo2resurrected?search=${encoded}&page=${page}&completed=true${this.buildFilters(filters)}`;
-    return this.interceptApiResponse(pattern, triggerUrl);
+    return this.fetchApi(this.listingsPath(search, page, `&completed=true${this.buildFilters(filters)}`));
   }
 }
