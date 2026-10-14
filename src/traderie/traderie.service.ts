@@ -110,11 +110,12 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
   }
 
   private buildFilters(opts: ListingFilters): string {
-    const parts: string[] = [];
-    if (opts.mode) parts.push(`mode=${opts.mode}`);
-    if (opts.ladder !== undefined) parts.push(`ladder=${opts.ladder}`);
-    if (opts.ethereal) parts.push(`ethereal=true`);
-    return parts.length ? `&${parts.join('&')}` : '';
+    // Traderie only honors prop_* filters; bare mode/ladder/ethereal are silently ignored
+    const parts = ['prop_Platform=PC'];
+    if (opts.mode) parts.push(`prop_Mode=${opts.mode === 'hc' ? 'hardcore' : 'softcore'}`);
+    if (opts.ladder !== undefined) parts.push(`prop_Ladder=${opts.ladder}`);
+    if (opts.ethereal) parts.push('prop_Ethereal=true');
+    return `&${parts.join('&')}`;
   }
 
   async fetchProducts(search: string) {
@@ -123,14 +124,14 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
     return this.interceptApiResponse(pattern, triggerUrl);
   }
 
-  async fetchListings(search: string, page = 1, filters: ListingFilters = {}) {
+  async fetchListings(search: string, page = 0, filters: ListingFilters = {}) {
     const encoded = encodeURIComponent(search);
     const pattern = /\/api\/diablo2resurrected\/listings\?.*search=/;
     const triggerUrl = `https://traderie.com/diablo2resurrected?search=${encoded}&page=${page}${this.buildFilters(filters)}`;
     return this.interceptApiResponse(pattern, triggerUrl);
   }
 
-  async fetchCompletedListings(search: string, page = 1, filters: ListingFilters = {}) {
+  async fetchCompletedListings(search: string, page = 0, filters: ListingFilters = {}) {
     const encoded = encodeURIComponent(search);
     const pattern =
       /\/api\/diablo2resurrected\/listings\?.*search=.*completed=true/;

@@ -25,7 +25,7 @@ export class TraderieController {
       ...(ladder !== undefined ? { ladder: ladder === 'true' } : {}),
       ...(ethereal === 'true' ? { ethereal: true } : {}),
     };
-    return this.svc.fetchListings(search.trim(), page ? parseInt(page, 10) : 1, filters);
+    return this.svc.fetchListings(search.trim(), page ? parseInt(page, 10) : 0, filters);
   }
 
   @Get('completed')
@@ -44,7 +44,7 @@ export class TraderieController {
     };
     return this.svc.fetchCompletedListings(
       search.trim(),
-      page ? parseInt(page, 10) : 1,
+      page ? parseInt(page, 10) : 0,
       filters,
     );
   }

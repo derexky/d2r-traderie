@@ -9,6 +9,17 @@ export type Mode = 'sc' | 'hc';
 
 interface Combo { ladder: boolean; mode: Mode }
 
+// SC trades far more than HC, so SC syncs every run and each HC combo every 6th run (3h), staggered
+function combosForRun(run: number): Combo[] {
+  const combos: Combo[] = [{ ladder: true, mode: 'sc' }, { ladder: false, mode: 'sc' }];
+  if (run % 6 === 0) combos.push({ ladder: true, mode: 'hc' });
+  if (run % 6 === 3) combos.push({ ladder: false, mode: 'hc' });
+  return combos;
+}
+
+// Traderie returns 50 listings per page
+const PAGE_SIZE = 50;
+
 interface PriceItem {
   name: string;
   quantity: number;
@@ -41,6 +52,7 @@ export class PricesService implements OnModuleInit {
   private readonly log = new Logger(PricesService.name);
   private db!: DatabaseSync;
   private syncing = false;
+  private run = 0;
 
   onModuleInit() {
     const path = process.env.DB_PATH ?? 'data/traderie.db';
@@ -74,15 +86,18 @@ export class PricesService implements OnModuleInit {
   async syncAll() {
     if (this.syncing) return;
     this.syncing = true;
-    this.log.log(`Starting price sync: ${TRACKED_ITEMS.length} items`);
+    const combos = combosForRun(this.run++);
+    this.log.log(`Starting price sync [${combos.map(comboKey).join(',')}]: ${TRACKED_ITEMS.length} items`);
     try {
       for (const item of TRACKED_ITEMS) {
-        try {
-          await this.syncItem(item);
-        } catch (err) {
-          this.log.error(`Failed [${item}]: ${(err as Error).message}`);
+        for (const combo of combos) {
+          try {
+            await this.syncItem(item, combo);
+          } catch (err) {
+            this.log.error(`Failed [${item}] ${comboKey(combo)}: ${(err as Error).message}`);
+          }
+          await delay(5000);
         }
-        await delay(5000);
       }
     } finally {
       this.syncing = false;
@@ -90,38 +105,40 @@ export class PricesService implements OnModuleInit {
     this.log.log('Price sync complete');
   }
 
-  private async syncItem(item: string) {
+  private async syncItem(item: string, combo: Combo) {
     const fetchPage = async (page: number) => {
       const res = await fetch(
-        `http://localhost:7432/api/traderie/completed?search=${encodeURIComponent(item)}&page=${page}`,
+        `http://localhost:7432/api/traderie/completed?search=${encodeURIComponent(item)}&page=${page}&mode=${combo.mode}&ladder=${combo.ladder}`,
         { headers: { 'x-api-token': process.env.API_TOKEN ?? '' } },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return ((await res.json()) as { listings?: RawListing[] }).listings ?? [];
     };
 
-    const page1 = await fetchPage(1);
-    await delay(3000);
-    const page2 = await fetchPage(2);
-
-    // Merge and deduplicate by listing id
-    const seen = new Set<string>();
-    const listings: RawListing[] = [];
-    for (const l of [...page1, ...page2]) {
-      const id = String(l.id);
-      if (!seen.has(id)) { seen.add(id); listings.push(l); }
+    // Query by combo so minority combos (HC, non-ladder) aren't crowded out by ladder SC
+    const key = comboKey(combo);
+    // Traderie pages are 0-indexed
+    const page1 = await fetchPage(0);
+    // Only go to the next page when page 0 is full and entirely unseen, i.e. there may be a gap
+    const exists = this.db.prepare('SELECT 1 FROM price_listings WHERE item = ? AND combo = ? AND id = ?');
+    let page2: RawListing[] = [];
+    if (page1.length >= PAGE_SIZE && !page1.some((l) => exists.get(item, key, String(l.id)))) {
+      await delay(3000);
+      page2 = await fetchPage(1);
     }
 
-    // Convert and group by combo using listing properties
-    const groups: Record<string, StoredListing[]> = {
-      ladder_sc: [], ladder_hc: [], nonladder_sc: [], nonladder_hc: [],
-    };
-    for (const listing of listings) {
-      const combo = extractCombo(listing);
-      if (!combo) continue;
+    const newListings: StoredListing[] = [];
+    const seen = new Set<string>();
+    for (const listing of [...page1, ...page2]) {
+      const id = String(listing.id);
+      if (seen.has(id)) continue;
+      seen.add(id);
+      // Guard: prop_Ladder=false also returns listings lacking a Ladder prop
+      const actual = extractCombo(listing);
+      if (!actual || comboKey(actual) !== key) continue;
       const ts = listing.updated_at ? new Date(listing.updated_at).getTime() : null;
-      groups[comboKey(combo)].push({
-        id: String(listing.id),
+      newListings.push({
+        id,
         completed_at: ts && !isNaN(ts) ? ts : null,
         prices: (listing.prices ?? [])
           .filter((p) => p.name)
@@ -145,31 +162,29 @@ export class PricesService implements OnModuleInit {
     const insertSnapshot = this.db.prepare(
       'INSERT INTO price_snapshots (item, combo, synced_at, price, trade_window) VALUES (?, ?, ?, ?, ?)');
 
-    const logParts: string[] = [];
-    for (const [key, newListings] of Object.entries(groups)) {
-      this.db.exec('BEGIN');
-      try {
-        for (const l of newListings) {
-          upsert.run(item, key, l.id, l.completed_at, JSON.stringify(l.prices), JSON.stringify(l.props));
-        }
-        trim.run(item, key, item, key);
-        const allListings: StoredListing[] = selectAll.all(item, key).map((r: any) => ({
-          id: r.id,
-          completed_at: r.completed_at,
-          prices: JSON.parse(r.prices),
-          props: JSON.parse(r.props),
-        }));
-        insertSnapshot.run(item, key, Date.now(),
-          JSON.stringify(calcPrice(allListings)), JSON.stringify(calcWindow(allListings)));
-        this.db.exec('COMMIT');
-        logParts.push(`${key}=${newListings.length}(total:${allListings.length})`);
-      } catch (err) {
-        this.db.exec('ROLLBACK');
-        throw err;
+    this.db.exec('BEGIN');
+    let total: number;
+    try {
+      for (const l of newListings) {
+        upsert.run(item, key, l.id, l.completed_at, JSON.stringify(l.prices), JSON.stringify(l.props));
       }
+      trim.run(item, key, item, key);
+      const allListings: StoredListing[] = selectAll.all(item, key).map((r: any) => ({
+        id: r.id,
+        completed_at: r.completed_at,
+        prices: JSON.parse(r.prices),
+        props: JSON.parse(r.props),
+      }));
+      insertSnapshot.run(item, key, Date.now(),
+        JSON.stringify(calcPrice(allListings)), JSON.stringify(calcWindow(allListings)));
+      this.db.exec('COMMIT');
+      total = allListings.length;
+    } catch (err) {
+      this.db.exec('ROLLBACK');
+      throw err;
     }
 
-    this.log.log(`Synced [${item}] ${logParts.join(' ')}`);
+    this.log.log(`Synced [${item}] ${key}=${newListings.length}(total:${total})`);
   }
 
   async triggerSync(): Promise<void> {
