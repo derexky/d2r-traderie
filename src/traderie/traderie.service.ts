@@ -23,6 +23,7 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
   private readonly log = new Logger(TraderieService.name);
   private browser: Browser | null = null;
   private page: Page | null = null;
+  private hasAuth = false;
 
   async onModuleInit() {
     this.browser = await chromium.launch({
@@ -43,6 +44,11 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
     await this.browser?.close();
   }
 
+  // Persist the session after every successful request so tokens Traderie rotates in-page survive restarts
+  private async saveAuth() {
+    if (this.hasAuth) await this.page!.context().storageState({ path: AUTH_STATE });
+  }
+
   private async waitForCfChallenge(page: Page): Promise<void> {
     if ((await page.title()) === 'Just a moment...') {
       this.log.log('Waiting for Cloudflare challenge...');
@@ -55,9 +61,9 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
 
   private async getPage(): Promise<Page> {
     if (!this.page || this.page.isClosed()) {
-      const hasAuth = existsSync(AUTH_STATE);
-      if (!hasAuth) this.log.warn(`${AUTH_STATE} not found — completed listings will return 401`);
-      const context = await this.browser!.newContext(hasAuth ? { storageState: AUTH_STATE } : {});
+      this.hasAuth = existsSync(AUTH_STATE);
+      if (!this.hasAuth) this.log.warn(`${AUTH_STATE} not found — completed listings will return 401`);
+      const context = await this.browser!.newContext(this.hasAuth ? { storageState: AUTH_STATE } : {});
       await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
@@ -74,7 +80,7 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
       const cookies = await this.page.context().cookies('https://traderie.com');
       const hasCf = cookies.some((c) => c.name === 'cf_clearance');
       this.log.log(`cf_clearance set: ${hasCf}`);
-      if (hasAuth) await this.page.context().storageState({ path: AUTH_STATE }); // keep refreshed tokens
+      await this.saveAuth();
 
       this.log.log('Traderie page ready');
     }
@@ -99,6 +105,7 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
     }
     const data = (await response.json()) as unknown;
     this.log.log(`Intercepted ${response.url()} → ${response.status()}`);
+    await this.saveAuth();
     return data;
   }
 
