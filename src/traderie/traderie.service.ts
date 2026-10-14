@@ -122,7 +122,8 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
       const page = await this.getPage();
       const res = await page
         .evaluate(async ({ path, auth }) => {
-          const r = await fetch(path, { headers: auth ? { authorization: auth } : {} });
+          // Traderie occasionally never answers; abort so one stuck call can't stall the whole sync
+          const r = await fetch(path, { headers: auth ? { authorization: auth } : {}, signal: AbortSignal.timeout(30000) });
           return { status: r.status, body: await r.text() };
         }, { path, auth: this.authHeader })
         .catch((err: Error) => ({ status: 0, body: err.message }));
