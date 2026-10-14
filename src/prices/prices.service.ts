@@ -1,9 +1,11 @@
 import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Cron, CronExpression } from '@nestjs/schedule';
-import * as admin from 'firebase-admin';
+import { mkdirSync } from 'node:fs';
+import { dirname } from 'node:path';
+import { DatabaseSync } from 'node:sqlite';
 import { TRACKED_ITEMS } from './tracked-items';
 
-type Mode = 'sc' | 'hc';
+export type Mode = 'sc' | 'hc';
 
 interface Combo { ladder: boolean; mode: Mode }
 
@@ -18,15 +20,18 @@ interface PriceSummary {
   top: Array<{ items: PriceItem[]; freq: number }>;
 }
 
+// Same shape as a serialized Firestore Timestamp, so existing consumers keep working
+export interface Ts { _seconds: number; _nanoseconds: number }
+
 interface TradeWindow {
-  earliest: admin.firestore.Timestamp | null;
-  latest:   admin.firestore.Timestamp | null;
+  earliest: Ts | null;
+  latest:   Ts | null;
 }
 
-// Stored in price_listings/{item}/{comboKey}/{listing_id}
+// completed_at is epoch millis
 interface StoredListing {
   id: string;
-  completed_at: admin.firestore.Timestamp | null;
+  completed_at: number | null;
   prices: PriceItem[];
   props: Record<string, string | number | boolean | null>;
 }
@@ -34,26 +39,40 @@ interface StoredListing {
 @Injectable()
 export class PricesService implements OnModuleInit {
   private readonly log = new Logger(PricesService.name);
-  private db: admin.firestore.Firestore | null = null;
+  private db!: DatabaseSync;
   private syncing = false;
 
   onModuleInit() {
-    try {
-      if (!admin.apps.length) {
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        // eslint-disable-next-line @typescript-eslint/no-require-imports
-        const sa = require(require('path').join(process.cwd(), 'serviceAccount.json'));
-        admin.initializeApp({ credential: admin.credential.cert(sa) });
-      }
-      this.db = admin.firestore();
-    } catch {
-      this.log.warn('serviceAccount.json not found — price sync disabled');
-    }
+    const path = process.env.DB_PATH ?? 'data/traderie.db';
+    mkdirSync(dirname(path), { recursive: true });
+    this.db = new DatabaseSync(path);
+    this.db.exec(`
+      PRAGMA journal_mode = WAL;
+      CREATE TABLE IF NOT EXISTS price_listings (
+        item         TEXT NOT NULL,
+        combo        TEXT NOT NULL,
+        id           TEXT NOT NULL,
+        completed_at INTEGER,
+        prices       TEXT NOT NULL,
+        props        TEXT NOT NULL,
+        PRIMARY KEY (item, combo, id)
+      );
+      CREATE TABLE IF NOT EXISTS price_snapshots (
+        id           INTEGER PRIMARY KEY AUTOINCREMENT,
+        item         TEXT NOT NULL,
+        combo        TEXT NOT NULL,
+        synced_at    INTEGER NOT NULL,
+        price        TEXT NOT NULL,
+        trade_window TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_snapshots ON price_snapshots (item, combo, synced_at DESC);
+    `);
+    this.log.log(`SQLite opened at ${path}`);
   }
 
   @Cron(CronExpression.EVERY_30_MINUTES)
   async syncAll() {
-    if (!this.db || this.syncing) return;
+    if (this.syncing) return;
     this.syncing = true;
     this.log.log(`Starting price sync: ${TRACKED_ITEMS.length} items`);
     try {
@@ -75,6 +94,7 @@ export class PricesService implements OnModuleInit {
     const fetchPage = async (page: number) => {
       const res = await fetch(
         `http://localhost:7432/api/traderie/completed?search=${encodeURIComponent(item)}&page=${page}`,
+        { headers: { 'x-api-token': process.env.API_TOKEN ?? '' } },
       );
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return ((await res.json()) as { listings?: RawListing[] }).listings ?? [];
@@ -102,7 +122,7 @@ export class PricesService implements OnModuleInit {
       const ts = listing.updated_at ? new Date(listing.updated_at).getTime() : null;
       groups[comboKey(combo)].push({
         id: String(listing.id),
-        completed_at: ts && !isNaN(ts) ? admin.firestore.Timestamp.fromMillis(ts) : null,
+        completed_at: ts && !isNaN(ts) ? ts : null,
         prices: (listing.prices ?? [])
           .filter((p) => p.name)
           .map((p) => ({ name: p.name!, quantity: p.quantity ?? 1, group: p.group ?? 0 })),
@@ -110,46 +130,43 @@ export class PricesService implements OnModuleInit {
       });
     }
 
+    const MAX_LISTINGS = 500;
+    const upsert = this.db.prepare(`
+      INSERT INTO price_listings (item, combo, id, completed_at, prices, props) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT (item, combo, id) DO UPDATE SET
+        completed_at = excluded.completed_at, prices = excluded.prices, props = excluded.props`);
+    // Keep only the newest MAX_LISTINGS by completed_at
+    const trim = this.db.prepare(`
+      DELETE FROM price_listings WHERE item = ? AND combo = ? AND id NOT IN (
+        SELECT id FROM price_listings WHERE item = ? AND combo = ?
+        ORDER BY COALESCE(completed_at, 0) DESC LIMIT ${MAX_LISTINGS})`);
+    const selectAll = this.db.prepare(
+      'SELECT id, completed_at, prices, props FROM price_listings WHERE item = ? AND combo = ?');
+    const insertSnapshot = this.db.prepare(
+      'INSERT INTO price_snapshots (item, combo, synced_at, price, trade_window) VALUES (?, ?, ?, ?, ?)');
+
     const logParts: string[] = [];
     for (const [key, newListings] of Object.entries(groups)) {
-      // Upsert to persistent store using listing id as doc id (natural dedup)
-      if (newListings.length > 0) {
-        const upsertBatch = this.db!.batch();
-        for (const listing of newListings) {
-          const ref = this.db!.collection('price_listings').doc(item).collection(key).doc(listing.id);
-          upsertBatch.set(ref, listing);
+      this.db.exec('BEGIN');
+      try {
+        for (const l of newListings) {
+          upsert.run(item, key, l.id, l.completed_at, JSON.stringify(l.prices), JSON.stringify(l.props));
         }
-        await upsertBatch.commit();
+        trim.run(item, key, item, key);
+        const allListings: StoredListing[] = selectAll.all(item, key).map((r: any) => ({
+          id: r.id,
+          completed_at: r.completed_at,
+          prices: JSON.parse(r.prices),
+          props: JSON.parse(r.props),
+        }));
+        insertSnapshot.run(item, key, Date.now(),
+          JSON.stringify(calcPrice(allListings)), JSON.stringify(calcWindow(allListings)));
+        this.db.exec('COMMIT');
+        logParts.push(`${key}=${newListings.length}(total:${allListings.length})`);
+      } catch (err) {
+        this.db.exec('ROLLBACK');
+        throw err;
       }
-
-      // Read all deduplicated listings
-      const MAX_LISTINGS = 500;
-      const allSnap = await this.db!.collection('price_listings').doc(item).collection(key).get();
-      let allDocs = allSnap.docs;
-
-      // Trim to MAX_LISTINGS, deleting oldest by completed_at
-      if (allDocs.length > MAX_LISTINGS) {
-        const sorted = [...allDocs].sort((a, b) => {
-          const aMs = (a.data() as StoredListing).completed_at?.toMillis() ?? 0;
-          const bMs = (b.data() as StoredListing).completed_at?.toMillis() ?? 0;
-          return aMs - bMs;
-        });
-        const toDelete = sorted.slice(0, allDocs.length - MAX_LISTINGS);
-        const trimBatch = this.db!.batch();
-        toDelete.forEach((d) => trimBatch.delete(d.ref));
-        await trimBatch.commit();
-        allDocs = sorted.slice(allDocs.length - MAX_LISTINGS);
-      }
-
-      const allListings = allDocs.map((d) => d.data() as StoredListing);
-
-      await this.db!.collection('price_snapshots').doc(item).collection(key).add({
-        synced_at: admin.firestore.FieldValue.serverTimestamp(),
-        price: calcPrice(allListings),
-        trade_window: calcWindow(allListings),
-      });
-
-      logParts.push(`${key}=${newListings.length}(total:${allListings.length})`);
     }
 
     this.log.log(`Synced [${item}] ${logParts.join(' ')}`);
@@ -157,6 +174,23 @@ export class PricesService implements OnModuleInit {
 
   async triggerSync(): Promise<void> {
     void this.syncAll();
+  }
+
+  getTrackedItems(): string[] {
+    return this.db.prepare('SELECT DISTINCT item FROM price_snapshots ORDER BY item').all()
+      .map((r: any) => r.item);
+  }
+
+  getHistory(item: string, ladder: boolean, mode: Mode, limit: number) {
+    return this.db.prepare(`
+      SELECT synced_at, price, trade_window FROM price_snapshots
+      WHERE item = ? AND combo = ? ORDER BY synced_at DESC LIMIT ?`)
+      .all(item, comboKey({ ladder, mode }), limit)
+      .map((r: any) => ({
+        synced_at: toTs(r.synced_at),
+        price: JSON.parse(r.price),
+        trade_window: JSON.parse(r.trade_window),
+      }));
   }
 }
 
@@ -166,12 +200,17 @@ function comboKey(c: Combo) {
   return `${c.ladder ? 'ladder' : 'nonladder'}_${c.mode}`;
 }
 
+function toTs(ms: number): Ts {
+  return { _seconds: Math.floor(ms / 1000), _nanoseconds: (ms % 1000) * 1e6 };
+}
+
 function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 interface RawProp {
-  property: string;
+  name?: string;
+  property?: string; // older API field name, replaced by `name`
   string?: string | null;
   bool?: boolean | null;
   number?: number | null;
@@ -184,22 +223,24 @@ interface RawListing {
   properties?: RawProp[];
 }
 
+const propName = (p: RawProp) => p.name ?? p.property ?? '';
+
 const COMBO_PROP_KEYS = new Set(['Mode', 'Ladder', 'Platform', 'Game version']);
 
 function extractProps(listing: RawListing): Record<string, string | number | boolean | null> {
   const result: Record<string, string | number | boolean | null> = {};
   for (const p of listing.properties ?? []) {
-    if (COMBO_PROP_KEYS.has(p.property)) continue;
-    result[p.property] = p.string ?? p.number ?? (p.bool !== null && p.bool !== undefined ? p.bool : null);
+    if (COMBO_PROP_KEYS.has(propName(p))) continue;
+    result[propName(p)] = p.string ?? p.number ?? (p.bool !== null && p.bool !== undefined ? p.bool : null);
   }
   return result;
 }
 
 function extractCombo(listing: RawListing): { mode: Mode; ladder: boolean } | null {
   const props = listing.properties ?? [];
-  const modeProp   = props.find((p) => p.property === 'Mode');
-  const ladderProp = props.find((p) => p.property === 'Ladder');
-  const platform   = props.find((p) => p.property === 'Platform');
+  const modeProp   = props.find((p) => propName(p) === 'Mode');
+  const ladderProp = props.find((p) => propName(p) === 'Ladder');
+  const platform   = props.find((p) => propName(p) === 'Platform');
   if (platform?.string && platform.string !== 'PC') return null;
   if (!modeProp || !ladderProp) return null;
   const mode: Mode = modeProp.string === 'hardcore' ? 'hc' : 'sc';
@@ -238,11 +279,11 @@ function calcPrice(listings: StoredListing[]): PriceSummary {
 
 function calcWindow(listings: StoredListing[]): TradeWindow {
   const millis = listings
-    .map((l) => l.completed_at?.toMillis() ?? null)
+    .map((l) => l.completed_at)
     .filter((t): t is number => t !== null);
   if (!millis.length) return { earliest: null, latest: null };
   return {
-    earliest: admin.firestore.Timestamp.fromMillis(Math.min(...millis)),
-    latest:   admin.firestore.Timestamp.fromMillis(Math.max(...millis)),
+    earliest: toTs(Math.min(...millis)),
+    latest:   toTs(Math.max(...millis)),
   };
 }

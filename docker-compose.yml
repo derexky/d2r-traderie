@@ -5,5 +5,5 @@ services:
     ports:
       - "7432:7432"
     volumes:
-      - ./serviceAccount.json:/app/serviceAccount.json:ro
+      - ./data:/app/data
     shm_size: '512mb'

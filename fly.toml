@@ -5,6 +5,7 @@ primary_region = 'sin'
 
 [env]
   PORT = '7432'
+  DB_PATH = '/data/traderie.db'
 
 [mounts]
   source = 'chrome_data'

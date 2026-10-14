@@ -3,10 +3,14 @@ import {
   OnModuleInit,
   OnModuleDestroy,
   Logger,
+  UnauthorizedException,
 } from '@nestjs/common';
+import { existsSync } from 'node:fs';
 import { chromium, Browser, Page } from 'playwright';
 
 const TRADERIE_HOME = 'https://traderie.com/diablo2resurrected';
+// Logged-in session produced by scripts/login.ts; completed listings return 401 without it
+const AUTH_STATE = process.env.TRADERIE_AUTH ?? 'data/traderie-auth.json';
 
 export interface ListingFilters {
   mode?: 'hc' | 'sc';
@@ -51,7 +55,9 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
 
   private async getPage(): Promise<Page> {
     if (!this.page || this.page.isClosed()) {
-      const context = await this.browser!.newContext();
+      const hasAuth = existsSync(AUTH_STATE);
+      if (!hasAuth) this.log.warn(`${AUTH_STATE} not found — completed listings will return 401`);
+      const context = await this.browser!.newContext(hasAuth ? { storageState: AUTH_STATE } : {});
       await context.addInitScript(() => {
         Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
       });
@@ -68,6 +74,7 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
       const cookies = await this.page.context().cookies('https://traderie.com');
       const hasCf = cookies.some((c) => c.name === 'cf_clearance');
       this.log.log(`cf_clearance set: ${hasCf}`);
+      if (hasAuth) await this.page.context().storageState({ path: AUTH_STATE }); // keep refreshed tokens
 
       this.log.log('Traderie page ready');
     }
@@ -81,12 +88,15 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
     const mainPage = await this.getPage();
 
     const responsePromise = mainPage.waitForResponse(
-      (res) => urlPattern.test(res.url()) && res.status() === 200,
+      (res) => urlPattern.test(res.url()) && [200, 401].includes(res.status()),
       { timeout: 60000 },
     );
     await mainPage.goto(triggerUrl, { waitUntil: 'domcontentloaded', timeout: 60000 });
     await this.waitForCfChallenge(mainPage);
     const response = await responsePromise;
+    if (response.status() === 401) {
+      throw new UnauthorizedException(`Traderie session missing or expired — run scripts/login.ts and copy ${AUTH_STATE}`);
+    }
     const data = (await response.json()) as unknown;
     this.log.log(`Intercepted ${response.url()} → ${response.status()}`);
     return data;
