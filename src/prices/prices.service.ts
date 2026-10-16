@@ -19,6 +19,14 @@ function combosForRun(run: number): Combo[] {
   ];
 }
 
+// Every combo, for on-demand syncs of specific items (e.g. newly tracked ones)
+const ALL_COMBOS: Combo[] = [
+  { ladder: true, mode: 'sc' },
+  { ladder: false, mode: 'sc' },
+  { ladder: true, mode: 'hc' },
+  { ladder: false, mode: 'hc' },
+];
+
 // Traderie returns 50 listings per page
 const PAGE_SIZE = 50;
 
@@ -88,11 +96,23 @@ export class PricesService implements OnModuleInit {
   @Cron(CronExpression.EVERY_30_MINUTES)
   async syncAll() {
     if (this.syncing) return;
+    await this.runSync(TRACKED_ITEMS, combosForRun(this.run++));
+  }
+
+  get isSyncing() {
+    return this.syncing;
+  }
+
+  // Sync only these items, every combo; the caller checks they are tracked and no sync is running
+  syncItems(items: string[]) {
+    void this.runSync(items, ALL_COMBOS);
+  }
+
+  private async runSync(items: string[], combos: Combo[]) {
     this.syncing = true;
-    const combos = combosForRun(this.run++);
-    this.log.log(`Starting price sync [${combos.map(comboKey).join(',')}]: ${TRACKED_ITEMS.length} items`);
+    this.log.log(`Starting price sync [${combos.map(comboKey).join(',')}]: ${items.length} items`);
     try {
-      for (const item of TRACKED_ITEMS) {
+      for (const item of items) {
         for (const combo of combos) {
           try {
             await this.syncItem(item, combo);

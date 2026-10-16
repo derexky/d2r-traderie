@@ -1,15 +1,27 @@
-import { BadRequestException, Controller, Get, Post, Query } from '@nestjs/common';
+import { BadRequestException, Body, ConflictException, Controller, Get, Post, Query } from '@nestjs/common';
 import { PricesService, Mode } from './prices.service';
+import { TRACKED_ITEMS } from './tracked-items';
 
 @Controller('prices')
 export class PricesController {
   constructor(private readonly svc: PricesService) {}
 
-  // Manual trigger for testing
+  // Manual trigger. Body { items: [...] } syncs only those tracked items (every combo), else everything
   @Post('sync')
-  async triggerSync() {
-    await this.svc.triggerSync();
-    return { message: 'sync started' };
+  async triggerSync(@Body() body?: { items?: unknown }) {
+    if (body?.items === undefined) {
+      await this.svc.triggerSync();
+      return { message: 'sync started' };
+    }
+    const items = body.items;
+    if (!Array.isArray(items) || items.length === 0 || !items.every((i) => typeof i === 'string')) {
+      throw new BadRequestException('items must be a non-empty array of item names');
+    }
+    const unknown = items.filter((i) => !TRACKED_ITEMS.includes(i));
+    if (unknown.length) throw new BadRequestException(`not tracked: ${unknown.join(', ')}`);
+    if (this.svc.isSyncing) throw new ConflictException('a sync is already running');
+    this.svc.syncItems(items);
+    return { message: 'sync started', items };
   }
 
   @Get('items')
