@@ -195,9 +195,12 @@ export class PricesService implements OnModuleInit {
     void this.syncAll();
   }
 
+  // Items with price data that are still tracked; dropped items keep their history but stop showing
   getTrackedItems(): string[] {
+    const tracked = new Set(TRACKED_ITEMS);
     return this.db.prepare('SELECT DISTINCT item FROM price_snapshots ORDER BY item').all()
-      .map((r: any) => r.item);
+      .map((r: any) => r.item)
+      .filter((item: string) => tracked.has(item));
   }
 
   getHistory(item: string, ladder: boolean, mode: Mode, limit: number) {
