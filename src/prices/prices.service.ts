@@ -3,7 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { TRACKED_ITEMS } from './tracked-items';
+import { TRACKED_GROUPS, TRACKED_ITEMS } from './tracked-items';
 
 export type Mode = 'sc' | 'hc';
 
@@ -201,6 +201,14 @@ export class PricesService implements OnModuleInit {
     return this.db.prepare('SELECT DISTINCT item FROM price_snapshots ORDER BY item').all()
       .map((r: any) => r.item)
       .filter((item: string) => tracked.has(item));
+  }
+
+  // Same items as getTrackedItems, grouped by category in tracked-items order; empty groups dropped
+  getTrackedGroups(): { category: string; items: string[] }[] {
+    const withData = new Set(this.getTrackedItems());
+    return TRACKED_GROUPS
+      .map((g) => ({ category: g.category, items: g.items.filter((i) => withData.has(i)) }))
+      .filter((g) => g.items.length > 0);
   }
 
   getHistory(item: string, ladder: boolean, mode: Mode, limit: number) {

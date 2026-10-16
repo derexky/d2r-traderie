@@ -17,6 +17,11 @@ export class PricesController {
     return this.svc.getTrackedItems();
   }
 
+  @Get('groups')
+  getTrackedGroups() {
+    return this.svc.getTrackedGroups();
+  }
+
   @Get('latest')
   getLatest(@Query('item') item: string, @Query('ladder') ladder: string, @Query('mode') mode: string) {
     if (!item?.trim()) throw new BadRequestException('item is required');

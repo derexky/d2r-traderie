@@ -1,78 +1,90 @@
-// Ladder Softcore tracked items
-export const TRACKED_ITEMS: string[] = [
-  // Runes
-  'Ber Rune',
-  'Jah Rune',
-  'Cham Rune',
-  'Zod Rune',
-  'Ohm Rune',
-  'Vex Rune',
-  'Lo Rune',
-  'Sur Rune',
-  'Ist Rune',
-  'Gul Rune',
-  'Um Rune',
-  'Mal Rune',
-  'Pul Rune',
-
-  // Uniques / Runewords
-  'Shako',
-  'Enigma',
-  'Infinity',
-  'Chains of Honor',
-  'Call to Arms',
-  'Spirit',
-  'Grief',
-  'Death',
-
-  // Charms
-  'Annihilus',
-  'Hellfire Torch',
-  "Gheed's Fortune",
-
-  // Reign of the Warlock
-  "Hellwarden's Will",
-  'Entropy Locket',
-  'Opalvein',
-  'Sling',
-  'Renewed Cold Rupture',
-  'Renewed Flame Rift',
-  'Renewed Crack of the Heavens',
-  'Renewed Rotting Fissure',
-  'Renewed Bone Break',
-  'Renewed Black Cleft',
-  'Measured Wrath',
-  'Ars Al\'Diabolos',
-
-  // Misc
-  "Talic's Anguish",
-  "Korlic's Pain",
-  "Madawc's Ire",
-  "Bul-Kathos' Nightmare",
-  "Worusk's End",
-
-  // Jewelry
-  "Mara's Kaleidoscope",
-  'Stone of Jordan',
-
-  // Armor
-  'Arachnid Mesh',
-  "Verdungo's Hearty Cord",
-  'Sandstorm Trek',
-  'War Traveler',
-  'Waterwalkers',
-
-  // Additional Runewords
-  'Heart of the Oak',
-  'Fortitude',
-  'Breath of the Dying',
-  'Insight',
-  'Pride',
-
-  // Additional Uniques
-  "Titan's Revenge",
-  'WindForce',
-  "Highlord's Wrath",
-  "Dracul's Grasp",
-  'Herald of Zakarum',
+// Items whose prices are synced (Softcore + Hardcore, Ladder + Non-Ladder), grouped by item kind.
+// Category labels are shown as headings on the d2r-fe price page. Names must match traderie's
+// English item names. d2r-linebot keeps a copy of this file — update both.
+export const TRACKED_GROUPS: { category: string; items: string[] }[] = [
+  {
+    category: '符文',
+    items: [
+      'Ber Rune',
+      'Jah Rune',
+      'Cham Rune',
+      'Zod Rune',
+      'Ohm Rune',
+      'Vex Rune',
+      'Lo Rune',
+      'Sur Rune',
+      'Ist Rune',
+      'Gul Rune',
+      'Um Rune',
+      'Mal Rune',
+      'Pul Rune',
+    ],
+  },
+  {
+    category: '符文之語',
+    items: [
+      'Enigma',
+      'Infinity',
+      'Chains of Honor',
+      'Call to Arms',
+      'Spirit',
+      'Grief',
+      'Death',
+      'Heart of the Oak',
+      'Fortitude',
+      'Breath of the Dying',
+      'Insight',
+      'Pride',
+    ],
+  },
+  {
+    category: '暗金裝備',
+    items: [
+      'Shako',
+      "Hellwarden's Will",
+      'Arachnid Mesh',
+      "Verdungo's Hearty Cord",
+      'Sandstorm Trek',
+      'War Traveler',
+      'Waterwalkers',
+      "Dracul's Grasp",
+      "Mara's Kaleidoscope",
+      'Entropy Locket',
+      'Stone of Jordan',
+      'Opalvein',
+      'Sling',
+      "Titan's Revenge",
+      'WindForce',
+      "Highlord's Wrath",
+      'Herald of Zakarum',
+      'Measured Wrath',
+      "Ars Al'Diabolos",
+    ],
+  },
+  {
+    category: '咒符',
+    items: [
+      'Annihilus',
+      'Hellfire Torch',
+      "Gheed's Fortune",
+      'Renewed Cold Rupture',
+      'Renewed Flame Rift',
+      'Renewed Crack of the Heavens',
+      'Renewed Rotting Fissure',
+      'Renewed Bone Break',
+      'Renewed Black Cleft',
+    ],
+  },
+  {
+    category: '先祖雕像',
+    items: [
+      "Talic's Anguish",
+      "Korlic's Pain",
+      "Madawc's Ire",
+      "Bul-Kathos' Nightmare",
+      "Worusk's End",
+    ],
+  },
 ];
+
+export const TRACKED_ITEMS: string[] = TRACKED_GROUPS.flatMap((g) => g.items);
