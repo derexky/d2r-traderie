@@ -46,6 +46,11 @@ npm run start:dev
 
 ## 部署
 
-```bash
-gcloud run deploy d2r-traderie --source . --project=d2r-diablo --region=asia-east1
-```
+跑在 myhost（QNAP NAS）的 Docker 容器 `d2r-traderie`，由同一台的 `cloudflared` 對外提供 `https://traderie.derexky.com`。
+步驟（同步原始碼 → NAS 上建置 image → 以相同設定重建容器 → 驗證）見 Claude Code skill `deploy-traderie-myhost`。
+
+- 原始碼：`/share/homes/derexky/d2r-traderie`（不是 git repo，`.deployed-commit` 記錄已部署的 commit）
+- 資料：`/share/CACHEDEV1_DATA/homes/derexky/d2r-traderie-data` → `/app/data`
+- 環境變數：`/share/homes/derexky/d2r-traderie.env`（`API_TOKEN`）
+
+`fly.toml` 與 Cloud Run 是舊的部署方式，已不使用。
