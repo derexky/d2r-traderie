@@ -44,6 +44,13 @@ export const TRACKED_ITEMS: string[] = [
   'Measured Wrath',
   'Ars Al\'Diabolos',
 
+  // Misc
+  "Talic's Anguish",
+  "Korlic's Pain",
+  "Madawc's Ire",
+  "Bul-Kathos' Nightmare",
+  "Worusk's End",
+
   // Jewelry
   "Mara's Kaleidoscope",
   'Stone of Jordan',
