@@ -223,11 +223,15 @@ export class PricesService implements OnModuleInit {
       .filter((item: string) => tracked.has(item));
   }
 
-  // Same items as getTrackedItems, grouped by category in tracked-items order; empty groups dropped
-  getTrackedGroups(): { category: string; items: string[] }[] {
+  // Same items as getTrackedItems, grouped by category in tracked-items order; empty groups dropped.
+  // `zh` maps each English name to its Chinese name (added alongside `items` to keep old clients working)
+  getTrackedGroups(): { category: string; items: string[]; zh: Record<string, string> }[] {
     const withData = new Set(this.getTrackedItems());
     return TRACKED_GROUPS
-      .map((g) => ({ category: g.category, items: g.items.filter((i) => withData.has(i)) }))
+      .map((g) => {
+        const shown = g.items.filter(([name]) => withData.has(name));
+        return { category: g.category, items: shown.map(([name]) => name), zh: Object.fromEntries(shown) };
+      })
       .filter((g) => g.items.length > 0);
   }
 
