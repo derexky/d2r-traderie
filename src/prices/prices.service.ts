@@ -3,7 +3,7 @@ import { Cron, CronExpression } from '@nestjs/schedule';
 import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
-import { TRACKED_GROUPS, TRACKED_ITEMS } from './tracked-items';
+import { SEED_TRACKED_GROUPS } from './tracked-items';
 
 export type Mode = 'sc' | 'hc';
 
@@ -50,6 +50,8 @@ interface TradeWindow {
 }
 
 // completed_at is epoch millis
+export interface TrackedItem { name: string; zh: string; category: string }
+
 interface StoredListing {
   id: string;
   completed_at: number | null;
@@ -69,6 +71,7 @@ export class PricesService implements OnModuleInit {
     const path = process.env.DB_PATH ?? 'data/traderie.db';
     mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
+    const seedTracked = !this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'tracked_items'").get();
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS price_listings (
@@ -89,14 +92,26 @@ export class PricesService implements OnModuleInit {
         trade_window TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_snapshots ON price_snapshots (item, combo, synced_at DESC);
+      -- id keeps insertion order: categories and items are shown in the order they were added
+      CREATE TABLE IF NOT EXISTS tracked_items (
+        id       INTEGER PRIMARY KEY AUTOINCREMENT,
+        name     TEXT NOT NULL UNIQUE,
+        zh       TEXT NOT NULL,
+        category TEXT NOT NULL
+      );
     `);
+    if (seedTracked) {
+      for (const g of SEED_TRACKED_GROUPS) {
+        for (const [name, zh] of g.items) this.addTracked({ name, zh, category: g.category });
+      }
+    }
     this.log.log(`SQLite opened at ${path}`);
   }
 
   @Cron(CronExpression.EVERY_30_MINUTES)
   async syncAll() {
     if (this.syncing) return;
-    await this.runSync(TRACKED_ITEMS, combosForRun(this.run++));
+    await this.runSync(this.listTracked().map((t) => t.name), combosForRun(this.run++));
   }
 
   get isSyncing() {
@@ -129,14 +144,7 @@ export class PricesService implements OnModuleInit {
   }
 
   private async syncItem(item: string, combo: Combo) {
-    const fetchPage = async (page: number) => {
-      const res = await fetch(
-        `http://localhost:7432/api/traderie/completed?search=${encodeURIComponent(item)}&page=${page}&mode=${combo.mode}&ladder=${combo.ladder}`,
-        { headers: { 'x-api-token': process.env.API_TOKEN ?? '' } },
-      );
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      return ((await res.json()) as { listings?: RawListing[] }).listings ?? [];
-    };
+    const fetchPage = (page: number) => fetchCompleted(item, combo, page);
 
     // Query by combo so minority combos (HC, non-ladder) aren't crowded out by ladder SC
     const key = comboKey(combo);
@@ -215,24 +223,55 @@ export class PricesService implements OnModuleInit {
     void this.syncAll();
   }
 
+  listTracked(): TrackedItem[] {
+    return this.db.prepare('SELECT name, zh, category FROM tracked_items ORDER BY id').all() as any;
+  }
+
+  isTracked(name: string): boolean {
+    return !!this.db.prepare('SELECT 1 FROM tracked_items WHERE name = ?').get(name);
+  }
+
+  // Throws on a duplicate name (UNIQUE)
+  addTracked(t: TrackedItem) {
+    this.db.prepare('INSERT INTO tracked_items (name, zh, category) VALUES (?, ?, ?)').run(t.name, t.zh, t.category);
+  }
+
+  // Traderie's exact item name for a search (any casing), or null when no ladder SC trade matches it
+  async resolveName(search: string): Promise<string | null> {
+    const listings = await fetchCompleted(search, { ladder: true, mode: 'sc' }, 0);
+    const lower = search.toLowerCase();
+    return listings.map((l) => l.item?.name).find((n) => n?.toLowerCase() === lower) ?? null;
+  }
+
+  updateTracked(name: string, zh: string, category: string): boolean {
+    return this.db.prepare('UPDATE tracked_items SET zh = ?, category = ? WHERE name = ?').run(zh, category, name).changes > 0;
+  }
+
+  removeTracked(name: string): boolean {
+    return this.db.prepare('DELETE FROM tracked_items WHERE name = ?').run(name).changes > 0;
+  }
+
   // Items with price data that are still tracked; dropped items keep their history but stop showing
   getTrackedItems(): string[] {
-    const tracked = new Set(TRACKED_ITEMS);
+    const tracked = new Set(this.listTracked().map((t) => t.name));
     return this.db.prepare('SELECT DISTINCT item FROM price_snapshots ORDER BY item').all()
       .map((r: any) => r.item)
       .filter((item: string) => tracked.has(item));
   }
 
-  // Same items as getTrackedItems, grouped by category in tracked-items order; empty groups dropped.
+  // Same items as getTrackedItems, grouped by category in tracked order; empty groups dropped.
   // `zh` maps each English name to its Chinese name (added alongside `items` to keep old clients working)
   getTrackedGroups(): { category: string; items: string[]; zh: Record<string, string> }[] {
     const withData = new Set(this.getTrackedItems());
-    return TRACKED_GROUPS
-      .map((g) => {
-        const shown = g.items.filter(([name]) => withData.has(name));
-        return { category: g.category, items: shown.map(([name]) => name), zh: Object.fromEntries(shown) };
-      })
-      .filter((g) => g.items.length > 0);
+    const groups = new Map<string, { category: string; items: string[]; zh: Record<string, string> }>();
+    for (const t of this.listTracked()) {
+      if (!withData.has(t.name)) continue;
+      if (!groups.has(t.category)) groups.set(t.category, { category: t.category, items: [], zh: {} });
+      const g = groups.get(t.category)!;
+      g.items.push(t.name);
+      g.zh[t.name] = t.zh;
+    }
+    return [...groups.values()];
   }
 
   getHistory(item: string, ladder: boolean, mode: Mode, limit: number) {
@@ -258,6 +297,15 @@ function toTs(ms: number): Ts {
   return { _seconds: Math.floor(ms / 1000), _nanoseconds: (ms % 1000) * 1e6 };
 }
 
+async function fetchCompleted(search: string, combo: Combo, page: number): Promise<RawListing[]> {
+  const res = await fetch(
+    `http://localhost:7432/api/traderie/completed?search=${encodeURIComponent(search)}&page=${page}&mode=${combo.mode}&ladder=${combo.ladder}`,
+    { headers: { 'x-api-token': process.env.API_TOKEN ?? '' } },
+  );
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return ((await res.json()) as { listings?: RawListing[] }).listings ?? [];
+}
+
 function delay(ms: number) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -272,6 +320,7 @@ interface RawProp {
 
 interface RawListing {
   id?: string | number;
+  item?: { name?: string };
   updated_at?: string;
   prices?: { name?: string; value?: number; quantity?: number; group?: number }[];
   properties?: RawProp[];

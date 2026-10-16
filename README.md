@@ -35,7 +35,7 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
 
 ## 追蹤物品
 
-清單維護於 `src/prices/tracked-items.ts`，新增物品時需同步更新 `d2r-linebot` 的同名檔案。
+清單存在 SQLite 的 `tracked_items` 表，用 d2r-admin 的「TR 價格追蹤物品」頁新增／修改／移除（API：`GET/POST /api/prices/tracked`、`PATCH/DELETE /api/prices/tracked/:name`），不用重新部署。新增時會先到 traderie 成交紀錄比對英文名稱（不分大小寫，存成 traderie 的寫法，查不到就拒絕），再立即爬一次該物品（若有同步正在跑則等下一輪）。`src/prices/tracked-items.ts` 只是表第一次建立時灌入的初始清單。
 
 ## 開發
 

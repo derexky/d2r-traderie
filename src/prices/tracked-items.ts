@@ -1,8 +1,7 @@
-// Items whose prices are synced (Softcore + Hardcore, Ladder + Non-Ladder), grouped by item kind.
-// Category labels are shown as headings on the d2r-fe price page. Names must match traderie's
-// English item names; the Chinese name is shown next to it. d2r-linebot keeps a copy of this file —
-// update both.
-export const TRACKED_GROUPS: { category: string; items: [name: string, zh: string][] }[] = [
+// Initial tracked list, seeded into the tracked_items table when it is first created; after that the
+// list is managed through /prices/tracked (d2r-admin). Category labels are shown as headings on the
+// d2r-fe price page. Names must match traderie's English item names; the Chinese name is shown next to it.
+export const SEED_TRACKED_GROUPS: { category: string; items: [name: string, zh: string][] }[] = [
   {
     category: '符文',
     items: [
@@ -87,5 +86,3 @@ export const TRACKED_GROUPS: { category: string; items: [name: string, zh: strin
     ],
   },
 ];
-
-export const TRACKED_ITEMS: string[] = TRACKED_GROUPS.flatMap((g) => g.items.map(([name]) => name));
