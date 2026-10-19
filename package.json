@@ -5,7 +5,8 @@
   "scripts": {
     "build": "nest build",
     "start": "node dist/src/main",
-    "dev": "nest start --watch"
+    "dev": "nest start --watch",
+    "test": "nest build && node --test 'dist/src/**/*.test.js'"
   },
   "dependencies": {
     "@nestjs/common": "^11.0.1",

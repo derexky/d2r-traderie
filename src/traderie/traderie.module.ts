@@ -5,5 +5,6 @@ import { TraderieService } from './traderie.service';
 @Module({
   controllers: [TraderieController],
   providers: [TraderieService],
+  exports: [TraderieService],
 })
 export class TraderieModule {}

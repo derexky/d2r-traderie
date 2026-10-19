@@ -37,6 +37,15 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
 
 清單存在 SQLite 的 `tracked_items` 表，用 d2r-admin 的「TR 價格追蹤物品」頁新增／修改／移除（API：`GET/POST /api/prices/tracked`、`PATCH/DELETE /api/prices/tracked/:name`），不用重新部署。新增時會先到 traderie 成交紀錄比對英文名稱（不分大小寫，存成 traderie 的寫法，查不到就拒絕），再立即爬一次該物品（若有同步正在跑則等下一輪）。`src/prices/tracked-items.ts` 只是表第一次建立時灌入的初始清單。
 
+## 低價通知
+
+用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性門檻＋目標價」（`price_alerts` 表）。每 10 分鐘抓各設定的**掛賣中**列表第一頁，價格 ≤ 目標就推 LINE（同一輪合併成一則，同一張單只通知一次，紀錄在 `alert_hits`）。
+
+- 價格換算用 `price_values` 表（d2r-admin「TR 物品價值」頁）：一組價格 = Σ 價值 × 數量，多組擇一取最便宜；不在表內的物品無法換算，該組略過。表第一次建立時灌入 2026-10 的 Traderie 估價（Fal～Zod 符文），之後只看這張表
+- 屬性名稱要跟 Traderie 一模一樣（如 `+{{value}}% Enhanced Defense`）；數字代表下限，布林/字串必須相等
+- API（都在 `/api/prices` 下，d2r-service 的 `/api/admin/alerts`、`/api/admin/values` 原樣轉發）：`GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）、`GET /values`、`PUT/DELETE /values/:name`
+- 環境變數：`LINE_CHANNEL_ACCESS_TOKEN`（與 d2r-linebot 同一個）、`LINE_ALERT_TO`（接收者的 LINE userId）
+
 ## 開發
 
 ```bash
