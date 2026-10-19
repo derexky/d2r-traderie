@@ -29,6 +29,7 @@ export class TradesController {
       category: str('category') || null,
       item_ref: str('item_ref') || null,
       quality: str('quality') || null,
+      base_ref: str('base_ref') || null,
     });
   }
 
