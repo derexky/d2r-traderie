@@ -47,7 +47,7 @@ export class TradesService implements OnModuleInit {
     }
   }
 
-  findAll(filters: { category?: string; item_ref?: string }) {
+  findAll(filters: { category?: string; item_ref?: string; base_ref?: string }) {
     const entries = Object.entries(filters).filter(([, v]) => v !== undefined) as [string, string][];
     const where = entries.length ? `WHERE ${entries.map(([k]) => `${k} = ?`).join(' AND ')}` : '';
     return this.db.prepare(`SELECT * FROM trades ${where} ORDER BY id DESC`).all(...entries.map(([, v]) => v));

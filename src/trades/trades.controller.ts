@@ -8,8 +8,12 @@ export class TradesController {
   constructor(private readonly svc: TradesService) {}
 
   @Get()
-  findAll(@Query('category') category?: string, @Query('item_ref') item_ref?: string) {
-    return this.svc.findAll({ category, item_ref });
+  findAll(
+    @Query('category') category?: string,
+    @Query('item_ref') item_ref?: string,
+    @Query('base_ref') base_ref?: string,
+  ) {
+    return this.svc.findAll({ category, item_ref, base_ref });
   }
 
   // owner_uid comes from d2r-service, which verified the user's Firebase ID token
