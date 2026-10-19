@@ -11,6 +11,7 @@ export interface NewTrade {
   category: string | null;
   owner_uid: string;
   item_ref: string | null;
+  quality: string | null;
 }
 
 // Player trade listings from d2r-fe, kept here because this DB lives on a persistent volume
@@ -33,12 +34,13 @@ export class TradesService implements OnModuleInit {
         category       TEXT,
         created_at     TEXT NOT NULL DEFAULT (datetime('now')),
         owner_uid      TEXT,
-        item_ref       TEXT
+        item_ref       TEXT,
+        quality        TEXT
       );
     `);
     // tables created by earlier versions lack the newer columns
     const cols = this.db.prepare('PRAGMA table_info(trades)').all() as { name: string }[];
-    for (const col of ['owner_uid', 'item_ref']) {
+    for (const col of ['owner_uid', 'item_ref', 'quality']) {
       if (!cols.some((c) => c.name === col)) this.db.exec(`ALTER TABLE trades ADD COLUMN ${col} TEXT`);
     }
   }
@@ -52,10 +54,10 @@ export class TradesService implements OnModuleInit {
   create(t: NewTrade) {
     return this.db
       .prepare(
-        `INSERT INTO trades (item_name, item_stats_raw, price, contact, category, owner_uid, item_ref)
-         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO trades (item_name, item_stats_raw, price, contact, category, owner_uid, item_ref, quality)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
-      .get(t.item_name, t.item_stats_raw, t.price, t.contact, t.category, t.owner_uid, t.item_ref);
+      .get(t.item_name, t.item_stats_raw, t.price, t.contact, t.category, t.owner_uid, t.item_ref, t.quality);
   }
 
   // false when the trade does not exist or belongs to someone else

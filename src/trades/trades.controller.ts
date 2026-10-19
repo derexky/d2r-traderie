@@ -28,6 +28,7 @@ export class TradesController {
       item_stats_raw: str('item_stats_raw') || null,
       category: str('category') || null,
       item_ref: str('item_ref') || null,
+      quality: str('quality') || null,
     });
   }
 
