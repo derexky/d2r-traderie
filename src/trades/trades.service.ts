@@ -10,6 +10,7 @@ export interface NewTrade {
   contact: string;
   category: string | null;
   owner_uid: string;
+  item_ref: string | null;
 }
 
 // Player trade listings from d2r-fe, kept here because this DB lives on a persistent volume
@@ -31,27 +32,30 @@ export class TradesService implements OnModuleInit {
         contact        TEXT NOT NULL,
         category       TEXT,
         created_at     TEXT NOT NULL DEFAULT (datetime('now')),
-        owner_uid      TEXT
+        owner_uid      TEXT,
+        item_ref       TEXT
       );
     `);
-    // tables created before accounts existed have no owner column
+    // tables created by earlier versions lack the newer columns
     const cols = this.db.prepare('PRAGMA table_info(trades)').all() as { name: string }[];
-    if (!cols.some((c) => c.name === 'owner_uid')) this.db.exec('ALTER TABLE trades ADD COLUMN owner_uid TEXT');
+    for (const col of ['owner_uid', 'item_ref']) {
+      if (!cols.some((c) => c.name === col)) this.db.exec(`ALTER TABLE trades ADD COLUMN ${col} TEXT`);
+    }
   }
 
-  findAll(category?: string) {
-    return category === undefined
-      ? this.db.prepare('SELECT * FROM trades ORDER BY id DESC').all()
-      : this.db.prepare('SELECT * FROM trades WHERE category = ? ORDER BY id DESC').all(category);
+  findAll(filters: { category?: string; item_ref?: string }) {
+    const entries = Object.entries(filters).filter(([, v]) => v !== undefined) as [string, string][];
+    const where = entries.length ? `WHERE ${entries.map(([k]) => `${k} = ?`).join(' AND ')}` : '';
+    return this.db.prepare(`SELECT * FROM trades ${where} ORDER BY id DESC`).all(...entries.map(([, v]) => v));
   }
 
   create(t: NewTrade) {
     return this.db
       .prepare(
-        `INSERT INTO trades (item_name, item_stats_raw, price, contact, category, owner_uid)
-         VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO trades (item_name, item_stats_raw, price, contact, category, owner_uid, item_ref)
+         VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING *`,
       )
-      .get(t.item_name, t.item_stats_raw, t.price, t.contact, t.category, t.owner_uid);
+      .get(t.item_name, t.item_stats_raw, t.price, t.contact, t.category, t.owner_uid, t.item_ref);
   }
 
   // false when the trade does not exist or belongs to someone else
