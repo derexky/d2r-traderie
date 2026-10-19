@@ -9,6 +9,7 @@ export interface NewTrade {
   price: string;
   contact: string;
   category: string | null;
+  owner_uid: string;
 }
 
 // Player trade listings from d2r-fe, kept here because this DB lives on a persistent volume
@@ -29,9 +30,13 @@ export class TradesService implements OnModuleInit {
         price          TEXT NOT NULL,
         contact        TEXT NOT NULL,
         category       TEXT,
-        created_at     TEXT NOT NULL DEFAULT (datetime('now'))
+        created_at     TEXT NOT NULL DEFAULT (datetime('now')),
+        owner_uid      TEXT
       );
     `);
+    // tables created before accounts existed have no owner column
+    const cols = this.db.prepare('PRAGMA table_info(trades)').all() as { name: string }[];
+    if (!cols.some((c) => c.name === 'owner_uid')) this.db.exec('ALTER TABLE trades ADD COLUMN owner_uid TEXT');
   }
 
   findAll(category?: string) {
@@ -43,9 +48,14 @@ export class TradesService implements OnModuleInit {
   create(t: NewTrade) {
     return this.db
       .prepare(
-        `INSERT INTO trades (item_name, item_stats_raw, price, contact, category)
-         VALUES (?, ?, ?, ?, ?) RETURNING *`,
+        `INSERT INTO trades (item_name, item_stats_raw, price, contact, category, owner_uid)
+         VALUES (?, ?, ?, ?, ?, ?) RETURNING *`,
       )
-      .get(t.item_name, t.item_stats_raw, t.price, t.contact, t.category);
+      .get(t.item_name, t.item_stats_raw, t.price, t.contact, t.category, t.owner_uid);
+  }
+
+  // false when the trade does not exist or belongs to someone else
+  remove(id: number, owner_uid: string): boolean {
+    return this.db.prepare('DELETE FROM trades WHERE id = ? AND owner_uid = ?').run(id, owner_uid).changes > 0;
   }
 }
