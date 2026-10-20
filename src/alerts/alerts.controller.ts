@@ -1,6 +1,6 @@
-import { BadGatewayException, BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Put } from '@nestjs/common';
+import { BadGatewayException, BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { AlertsService, COMBOS, NewAlert } from './alerts.service';
-import { PropRule } from './match';
+import { Condition } from './match';
 
 // Under prices/ so d2r-service's admin proxy reaches it like the tracked list
 @Controller('prices')
@@ -12,7 +12,20 @@ export class AlertsController {
     return this.svc.list();
   }
 
-  // Body { item, max_value, ladder?: true, mode?: 'sc', props?: { "<traderie prop name>": min number | exact bool/string } }
+  // Declared before alerts/:id routes; ?item= English name, any casing. Lists every property the item can be
+  // filtered by, with the id/name/options a condition needs
+  @Get('alerts/props')
+  async props(@Query('item') item?: string) {
+    if (!item?.trim()) throw new BadRequestException('item is required');
+    const res = await this.svc.propsOf(item.trim()).catch((err: Error) => {
+      throw new BadGatewayException(`traderie lookup failed: ${err.message}`);
+    });
+    if (!res) throw new NotFoundException(`no traderie listings named "${item.trim()}"; check the English item name`);
+    return res;
+  }
+
+  // Body { item, max_value, ladder?: true, mode?: 'sc', conditions?: Condition[] }; condition id/name/type come from
+  // GET alerts/props, e.g. { id: 520, name: '+{{value}}% Faster Cast Rate', type: 'number', min: 35 }
   @Post('alerts')
   async add(@Body() body?: Record<string, unknown>) {
     return this.svc.add(await this.parse(body));
@@ -64,23 +77,52 @@ export class AlertsController {
   private async parse(body?: Record<string, unknown>): Promise<NewAlert> {
     const search = typeof body?.item === 'string' ? body.item.trim() : '';
     const max_value = body?.max_value;
-    const props = body?.props ?? {};
     if (!search) throw new BadRequestException('item is required');
     if (typeof max_value !== 'number' || !(max_value > 0)) throw new BadRequestException('max_value must be a positive number');
-    if (typeof props !== 'object' || Array.isArray(props) || props === null ||
-        !Object.values(props).every((v) => ['number', 'boolean', 'string'].includes(typeof v))) {
-      throw new BadRequestException('props must map property names to a number, boolean or string');
-    }
-    const item = await this.svc.resolveName(search).catch((err: Error) => {
+    const conditions = parseConditions(body?.conditions ?? []);
+    const item = await this.svc.resolveItem(search).catch((err: Error) => {
       throw new BadGatewayException(`traderie lookup failed: ${err.message}`);
     });
     if (!item) throw new BadRequestException(`no active traderie listings named "${search}"; check the English item name`);
     return {
-      item,
+      item: item.name,
+      item_id: item.id,
       ladder: body?.ladder !== false,
       mode: body?.mode === 'hc' ? 'hc' : 'sc',
       max_value,
-      props: props as Record<string, PropRule>,
+      conditions,
     };
   }
+}
+
+const isNum = (v: unknown): v is number => typeof v === 'number' && Number.isFinite(v);
+
+// Keeps only the fields each condition type uses
+function parseConditions(raw: unknown): Condition[] {
+  if (!Array.isArray(raw)) throw new BadRequestException('conditions must be an array');
+  return raw.map((c: any, i) => {
+    const bad = (why: string) => new BadRequestException(`conditions[${i}]: ${why}`);
+    if (!Number.isInteger(c?.id) || typeof c?.name !== 'string' || !c.name) throw bad('id and name are required');
+    const { id, name } = c as { id: number; name: string };
+    switch (c.type) {
+      case 'number': {
+        const min = c.min ?? undefined;
+        const max = c.max ?? undefined;
+        if ((min !== undefined && !isNum(min)) || (max !== undefined && !isNum(max))) throw bad('min and max must be numbers');
+        if (min === undefined && max === undefined) throw bad('a number condition needs min or max');
+        if (min !== undefined && max !== undefined && min > max) throw bad('min is above max');
+        return { id, name, type: 'number', ...(min !== undefined && { min }), ...(max !== undefined && { max }) };
+      }
+      case 'string':
+        if (!Array.isArray(c.values) || !c.values.length || !c.values.every((v: unknown) => typeof v === 'string' && v)) {
+          throw bad('values must be a non-empty array of strings');
+        }
+        return { id, name, type: 'string', values: c.values };
+      case 'bool':
+        if (typeof c.value !== 'boolean') throw bad('value must be true or false');
+        return { id, name, type: 'bool', value: c.value };
+      default:
+        throw bad('type must be number, string or bool');
+    }
+  });
 }

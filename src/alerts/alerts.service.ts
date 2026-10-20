@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { TraderieService } from '../traderie/traderie.service';
-import { Alert, RawListing, listingProps, matchAlert } from './match';
+import { Alert, PropDef, RawListing, SchemaProp, alertQuery, listingProps, matchAlert, propCatalog, summarizeProps } from './match';
 
 export type NewAlert = Omit<Alert, 'id'>;
 
@@ -13,6 +13,8 @@ export const COMBOS = ['ladder_sc', 'nonladder_sc', 'ladder_hc', 'nonladder_hc']
 export const comboOf = (a: Pick<Alert, 'ladder' | 'mode'>) => `${a.ladder ? 'ladder' : 'nonladder'}_${a.mode}`;
 
 export interface PriceValue { combo: string; name: string; value: number }
+
+export interface ItemRef { id: number; name: string; slug: string }
 
 // Traderie's ladder SC valuation as of 2026-10, used for every combo when price_values is first created
 const SEED_VALUES: [string, number][] = [
@@ -39,15 +41,24 @@ export class AlertsService implements OnModuleInit {
     const oneTable = !seedValues && !(this.db.prepare('PRAGMA table_info(price_values)').all() as { name: string }[])
       .some((c) => c.name === 'combo');
     if (oneTable) this.db.exec('ALTER TABLE price_values RENAME TO price_values_old');
+    // The first alerts matched property names locally and had no item id; their conditions can't be turned
+    // into Traderie filters, so an empty table is replaced and a non-empty one set aside for re-entry
+    const alertCols = this.db.prepare('PRAGMA table_info(price_alerts)').all() as { name: string }[];
+    if (alertCols.length && !alertCols.some((c) => c.name === 'item_id')) {
+      const rows = (this.db.prepare('SELECT COUNT(*) AS n FROM price_alerts').get() as { n: number }).n;
+      this.db.exec(rows ? 'ALTER TABLE price_alerts RENAME TO price_alerts_v1' : 'DROP TABLE price_alerts');
+      if (rows) this.log.warn(`Moved ${rows} old-format alerts to price_alerts_v1; re-create them in d2r-admin`);
+    }
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS price_alerts (
-        id        INTEGER PRIMARY KEY AUTOINCREMENT,
-        item      TEXT NOT NULL,
-        ladder    INTEGER NOT NULL,
-        mode      TEXT NOT NULL,
-        max_value REAL NOT NULL,
-        props     TEXT NOT NULL
+        id         INTEGER PRIMARY KEY AUTOINCREMENT,
+        item       TEXT NOT NULL,
+        item_id    INTEGER NOT NULL,
+        ladder     INTEGER NOT NULL,
+        mode       TEXT NOT NULL,
+        max_value  REAL NOT NULL,
+        conditions TEXT NOT NULL
       );
       -- listings already notified, so each one is pushed once per alert
       CREATE TABLE IF NOT EXISTS alert_hits (
@@ -87,19 +98,21 @@ export class AlertsService implements OnModuleInit {
 
   list(): Alert[] {
     return this.db.prepare('SELECT * FROM price_alerts ORDER BY id').all()
-      .map((r: any) => ({ ...r, ladder: !!r.ladder, props: JSON.parse(r.props) }));
+      .map((r: any) => ({ ...r, ladder: !!r.ladder, conditions: JSON.parse(r.conditions) }));
   }
 
   add(a: NewAlert): Alert {
-    const { id } = this.db.prepare('INSERT INTO price_alerts (item, ladder, mode, max_value, props) VALUES (?, ?, ?, ?, ?) RETURNING id')
-      .get(a.item, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.props)) as { id: number };
+    const { id } = this.db.prepare(
+      'INSERT INTO price_alerts (item, item_id, ladder, mode, max_value, conditions) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
+      .get(a.item, a.item_id, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.conditions)) as { id: number };
     return { id, ...a };
   }
 
   // Listings already notified stay notified, so tightening an alert doesn't repeat old hits
   update(id: number, a: NewAlert): Alert | null {
-    const changed = this.db.prepare('UPDATE price_alerts SET item = ?, ladder = ?, mode = ?, max_value = ?, props = ? WHERE id = ?')
-      .run(a.item, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.props), id).changes;
+    const changed = this.db.prepare(
+      'UPDATE price_alerts SET item = ?, item_id = ?, ladder = ?, mode = ?, max_value = ?, conditions = ? WHERE id = ?')
+      .run(a.item, a.item_id, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.conditions), id).changes;
     return changed ? { id, ...a } : null;
   }
 
@@ -108,14 +121,44 @@ export class AlertsService implements OnModuleInit {
     return this.db.prepare('DELETE FROM price_alerts WHERE id = ?').run(id).changes > 0;
   }
 
-  // Traderie's exact item name for a search (any casing), or null when no active listing matches it
-  async resolveName(search: string): Promise<string | null> {
+  // The Traderie item an English name (any casing) refers to, with the newest ladder SC selling listings
+  // of it; null when no active listing matches
+  private async resolve(search: string): Promise<{ item: ItemRef; listings: RawListing[] } | null> {
     const lower = search.toLowerCase();
-    return (await this.fetch(search, { ladder: true, mode: 'sc' })).map((l) => l.item?.name)
-      .find((n) => n?.toLowerCase() === lower) ?? null;
+    const res = await this.traderie.fetchListings(search, 0, { ladder: true, mode: 'sc' }, 'alerts') as {
+      listings?: (RawListing & { item?: { id?: number; name?: string; slug?: string } })[];
+    };
+    const listings = (res.listings ?? []).filter((l) => l.item?.name?.toLowerCase() === lower);
+    const it = listings[0]?.item;
+    return it?.id && it.name && it.slug ? { item: { id: it.id, name: it.name, slug: it.slug }, listings } : null;
   }
 
-  // ponytail: one fetch per alert, newest page only; group alerts by item/combo if the list grows large
+  async resolveItem(search: string): Promise<ItemRef | null> {
+    return (await this.resolve(search))?.item ?? null;
+  }
+
+  // Every property Traderie can filter the item by (id, type, string options), annotated with how sellers
+  // fill it in. Tracked items take those stats from their stored completed trades (hundreds, all combos);
+  // others from the newest page of selling listings
+  async propsOf(search: string): Promise<{ item: string; item_id: number; source: 'completed' | 'selling'; listings: number; props: PropDef[] } | null> {
+    const found = await this.resolve(search);
+    if (!found) return null;
+    const { item, listings } = found;
+    const schema = await this.traderie.fetchItemSchema(item.slug, 'alerts') as SchemaProp[];
+    const stored = (this.db.prepare('SELECT props FROM price_listings WHERE item = ?').all(item.name) as { props: string }[])
+      .map((r) => JSON.parse(r.props));
+    const sample = stored.length ? stored : listings.map(listingProps);
+    return {
+      item: item.name,
+      item_id: item.id,
+      source: stored.length ? 'completed' : 'selling',
+      listings: sample.length,
+      props: propCatalog(schema, summarizeProps(sample)),
+    };
+  }
+
+  // ponytail: one fetch per alert, newest page only; Traderie already filters by the conditions, so that page
+  // holds only candidates. Fetch more pages if hits start getting missed
   @Cron(CronExpression.EVERY_10_MINUTES)
   async check() {
     if (this.running) return;
@@ -128,7 +171,8 @@ export class AlertsService implements OnModuleInit {
       for (const v of this.listValues()) values.get(v.combo)?.set(v.name, v.value);
       for (const a of this.list()) {
         try {
-          for (const l of await this.fetch(a.item, a)) {
+          const res = await this.traderie.fetchItemListings(a.item_id, alertQuery(a), 'alerts') as { listings?: RawListing[] };
+          for (const l of res.listings ?? []) {
             const value = matchAlert(a, l, values.get(comboOf(a))!);
             if (value === null || seen.get(a.id, String(l.id))) continue;
             hits.push(formatHit(a, l, value));
@@ -151,18 +195,13 @@ export class AlertsService implements OnModuleInit {
       this.running = false;
     }
   }
-
-  private async fetch(search: string, combo: { ladder: boolean; mode: 'sc' | 'hc' }): Promise<RawListing[]> {
-    const res = await this.traderie.fetchListings(search, 0, combo, 'alerts') as { listings?: RawListing[] };
-    return res.listings ?? [];
-  }
 }
 
 function formatHit(a: Alert, l: RawListing, value: number): string {
   const price = (l.prices ?? []).map((p) => `${p.name}×${p.quantity ?? 1}${p.group ? ` (選項${p.group + 1})` : ''}`).join(', ');
   const props = listingProps(l);
-  const stats = Object.keys(a.props)
-    .map((k) => (k.includes('{{value}}') ? k.replace('{{value}}', String(props[k])) : `${k}: ${props[k]}`)).join(' / ');
+  const stats = a.conditions.map(({ name }) =>
+    (name.includes('{{value}}') ? name.replace('{{value}}', String(props[name])) : `${name}: ${props[name]}`)).join(' / ');
   return [
     `🔔 ${a.item} ${a.ladder ? 'Ladder' : 'NL'} ${a.mode.toUpperCase()}：${+value.toFixed(3)} ≤ ${a.max_value}`,
     price,

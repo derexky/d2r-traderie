@@ -39,13 +39,30 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
 
 ## 低價通知
 
-用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性門檻＋目標價」（`price_alerts` 表）。每 10 分鐘抓各設定的**掛賣中**列表第一頁，價格 ≤ 目標就推 LINE（同一輪合併成一則，同一張單只通知一次，紀錄在 `alert_hits`）。
+用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性條件＋目標價」（`price_alerts` 表）。每 10 分鐘把每筆通知的條件組成 Traderie 的查詢參數，抓該物品**掛賣中**列表第一頁（由 Traderie 篩選，回來的都是符合條件的單），本機再驗一次條件、換算價格，≤ 目標就推 LINE（同一輪合併成一則，同一張單只通知一次，紀錄在 `alert_hits`）。
 
 - 價格換算用 `price_values` 表（d2r-admin「TR 物品價值」頁），Ladder/NL × SC/HC 每種組合各一套，通知用自己組合的那套：一組價格 = Σ 價值 × 數量，多組擇一取最便宜；不在表內的物品無法換算，該組略過。表第一次建立時四個組合都灌入 2026-10 的 Traderie Ladder SC 估價（Fal～Zod 符文），之後只看這張表
-- 通知用獨立的匿名 Chrome context 抓掛賣列表（不需登入），跟查價用的登入頁面分開，出錯重開時互不影響；第一次檢查時才會開啟
-- 屬性名稱要跟 Traderie 一模一樣（如 `+{{value}}% Enhanced Defense`）；數字代表下限，布林/字串必須相等
-- API（都在 `/api/prices` 下，d2r-service 的 `/api/admin/alerts`、`/api/admin/values` 原樣轉發）：`GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）、`GET /values`、`PUT/DELETE /values/:combo/:name`（combo = `ladder_sc`／`nonladder_sc`／`ladder_hc`／`nonladder_hc`）
+- 通知用獨立的匿名 Chrome context 抓掛賣列表（不需登入），跟查價用的登入頁面分開，出錯重開時互不影響；第一次用到時才會開啟
+- API（都在 `/api/prices` 下，d2r-service 的 `/api/admin/alerts`、`/api/admin/values` 原樣轉發）：
+  - `GET /alerts/props?item=`：物品能篩選的所有屬性（id、名稱、類型、文字選項），附賣家實際填寫的出現率與值範圍（追蹤物品取已存的成交紀錄，其他即時抓最新一頁掛賣單）
+  - `GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）
+  - `GET /values`、`PUT/DELETE /values/:combo/:name`（combo = `ladder_sc`／`nonladder_sc`／`ladder_hc`／`nonladder_hc`）
 - 環境變數：`LINE_CHANNEL_ACCESS_TOKEN`（與 d2r-linebot 同一個）、`LINE_ALERT_TO`（接收者的 LINE userId）
+
+### Traderie 屬性篩選參數
+
+從 Traderie 前端程式與實測整理，`GET /api/diablo2resurrected/listings` 可加：
+
+| 屬性類型 | 參數 | 例 |
+|---|---|---|
+| 數字 下限／上限 | `prop_<屬性id>Min`、`prop_<屬性id>Max`（用 **id**，用名稱無效） | `prop_520Min=35`（FCR ≥ 35） |
+| 文字 | `prop_<屬性名稱>=值1,值2`（任一符合） | `prop_Base Item (Shield, Sword) 4=Monarch,Phase Blade` |
+| 布林 | `prop_<屬性名稱>=true/false` | `prop_Ethereal=true` |
+| 指定物品 | `item=<物品id>`（不用 `search` 模糊搜尋；回來的單沒有 `item` 物件，`item_id` 是字串） | `item=3588456322` |
+
+- 屬性 id 全站共用（同一屬性在不同物品 id 相同）；物品可篩的屬性清單：`GET /api/diablo2resurrected/items?id=<slug>&properties=`（`properties=` 必帶；slug 取自掛單的 `item.slug`，如 `griffons-eye`）
+- 加了數字條件，沒填該屬性的單也會被排除
+- 參數要 URL encode（空格用 `%20`）
 
 ## 開發
 

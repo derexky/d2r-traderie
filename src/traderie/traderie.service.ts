@@ -200,6 +200,20 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
     return this.sessions[session].fetchApi(this.listingsPath(search, page, this.buildFilters(filters)));
   }
 
+  // Selling listings of one item (by Traderie item id, so search matches on other items can't crowd the
+  // page) with a raw prop_* query, e.g. prop_520Min=35
+  async fetchItemListings(itemId: number, query: string, session: SessionName = 'main') {
+    return this.sessions[session].fetchApi(
+      `/api/diablo2resurrected/listings?itemTags=true&item=${itemId}&selling=true&auction=false&page=0&priceValues=true&${query}`);
+  }
+
+  // The item's filterable properties (id, name, type, string options); `slug` comes from a listing's item
+  async fetchItemSchema(slug: string, session: SessionName = 'main') {
+    const res = await this.sessions[session].fetchApi(
+      `/api/diablo2resurrected/items?id=${encodeURIComponent(slug)}&properties=`) as { items?: { properties?: unknown[] }[] };
+    return res.items?.[0]?.properties ?? [];
+  }
+
   async fetchCompletedListings(search: string, page = 0, filters: ListingFilters = {}) {
     return this.sessions.main.fetchApi(this.listingsPath(search, page, `&completed=true${this.buildFilters(filters)}`));
   }
