@@ -1,5 +1,5 @@
 import { BadGatewayException, BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Put } from '@nestjs/common';
-import { AlertsService, NewAlert } from './alerts.service';
+import { AlertsService, COMBOS, NewAlert } from './alerts.service';
 import { PropRule } from './match';
 
 // Under prices/ so d2r-service's admin proxy reaches it like the tracked list
@@ -44,20 +44,21 @@ export class AlertsController {
     return this.svc.listValues();
   }
 
-  // Body { value }; adds the item when it isn't in the table yet
-  @Put('values/:name')
-  setValue(@Param('name') name: string, @Body() body?: Record<string, unknown>) {
+  // Body { value }; adds the item when it isn't in that combo's table yet
+  @Put('values/:combo/:name')
+  setValue(@Param('combo') combo: string, @Param('name') name: string, @Body() body?: Record<string, unknown>) {
     const value = body?.value;
+    if (!COMBOS.includes(combo)) throw new BadRequestException(`combo must be one of ${COMBOS.join(', ')}`);
     if (!name.trim()) throw new BadRequestException('name is required');
     if (typeof value !== 'number' || !(value > 0)) throw new BadRequestException('value must be a positive number');
-    this.svc.setValue(name.trim(), value);
-    return { name: name.trim(), value };
+    this.svc.setValue(combo, name.trim(), value);
+    return { combo, name: name.trim(), value };
   }
 
-  @Delete('values/:name')
-  removeValue(@Param('name') name: string) {
-    if (!this.svc.removeValue(name)) throw new NotFoundException(`no value for ${name}`);
-    return { name };
+  @Delete('values/:combo/:name')
+  removeValue(@Param('combo') combo: string, @Param('name') name: string) {
+    if (!this.svc.removeValue(combo, name)) throw new NotFoundException(`no ${combo} value for ${name}`);
+    return { combo, name };
   }
 
   private async parse(body?: Record<string, unknown>): Promise<NewAlert> {

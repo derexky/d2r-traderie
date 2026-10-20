@@ -41,9 +41,10 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
 
 用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性門檻＋目標價」（`price_alerts` 表）。每 10 分鐘抓各設定的**掛賣中**列表第一頁，價格 ≤ 目標就推 LINE（同一輪合併成一則，同一張單只通知一次，紀錄在 `alert_hits`）。
 
-- 價格換算用 `price_values` 表（d2r-admin「TR 物品價值」頁）：一組價格 = Σ 價值 × 數量，多組擇一取最便宜；不在表內的物品無法換算，該組略過。表第一次建立時灌入 2026-10 的 Traderie 估價（Fal～Zod 符文），之後只看這張表
+- 價格換算用 `price_values` 表（d2r-admin「TR 物品價值」頁），Ladder/NL × SC/HC 每種組合各一套，通知用自己組合的那套：一組價格 = Σ 價值 × 數量，多組擇一取最便宜；不在表內的物品無法換算，該組略過。表第一次建立時四個組合都灌入 2026-10 的 Traderie Ladder SC 估價（Fal～Zod 符文），之後只看這張表
+- 通知用獨立的匿名 Chrome context 抓掛賣列表（不需登入），跟查價用的登入頁面分開，出錯重開時互不影響；第一次檢查時才會開啟
 - 屬性名稱要跟 Traderie 一模一樣（如 `+{{value}}% Enhanced Defense`）；數字代表下限，布林/字串必須相等
-- API（都在 `/api/prices` 下，d2r-service 的 `/api/admin/alerts`、`/api/admin/values` 原樣轉發）：`GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）、`GET /values`、`PUT/DELETE /values/:name`
+- API（都在 `/api/prices` 下，d2r-service 的 `/api/admin/alerts`、`/api/admin/values` 原樣轉發）：`GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）、`GET /values`、`PUT/DELETE /values/:combo/:name`（combo = `ladder_sc`／`nonladder_sc`／`ladder_hc`／`nonladder_hc`）
 - 環境變數：`LINE_CHANNEL_ACCESS_TOKEN`（與 d2r-linebot 同一個）、`LINE_ALERT_TO`（接收者的 LINE userId）
 
 ## 開發

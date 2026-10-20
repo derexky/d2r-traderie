@@ -5,7 +5,7 @@ export interface Alert {
   item: string;
   ladder: boolean;
   mode: 'sc' | 'hc';
-  // Same unit as the price_values table
+  // Same unit as this combo's price_values
   max_value: number;
   // Property name exactly as Traderie spells it, e.g. "+{{value}}% Enhanced Defense".
   // A number is a minimum; anything else must match exactly

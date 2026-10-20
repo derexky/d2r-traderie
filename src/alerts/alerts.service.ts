@@ -8,9 +8,13 @@ import { Alert, RawListing, listingProps, matchAlert } from './match';
 
 export type NewAlert = Omit<Alert, 'id'>;
 
-export interface PriceValue { name: string; value: number }
+// Same keys as the price snapshots: ladder_sc, nonladder_sc, ladder_hc, nonladder_hc
+export const COMBOS = ['ladder_sc', 'nonladder_sc', 'ladder_hc', 'nonladder_hc'];
+export const comboOf = (a: Pick<Alert, 'ladder' | 'mode'>) => `${a.ladder ? 'ladder' : 'nonladder'}_${a.mode}`;
 
-// Traderie's own valuation as of 2026-10, only used to fill price_values the first time it is created
+export interface PriceValue { combo: string; name: string; value: number }
+
+// Traderie's ladder SC valuation as of 2026-10, used for every combo when price_values is first created
 const SEED_VALUES: [string, number][] = [
   ['Zod Rune', 0.9], ['Cham Rune', 0.4], ['Jah Rune', 3], ['Ber Rune', 3.5], ['Sur Rune', 1.75], ['Lo Rune', 1.25],
   ['Ohm Rune', 0.75], ['Vex Rune', 0.5], ['Gul Rune', 0.25], ['Ist Rune', 0.16], ['Mal Rune', 0.1], ['Um Rune', 0.06],
@@ -31,6 +35,10 @@ export class AlertsService implements OnModuleInit {
     mkdirSync(dirname(path), { recursive: true });
     this.db = new DatabaseSync(path);
     const seedValues = !this.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'price_values'").get();
+    // The first version had one value table for every combo; start each combo from a copy of it
+    const oneTable = !seedValues && !(this.db.prepare('PRAGMA table_info(price_values)').all() as { name: string }[])
+      .some((c) => c.name === 'combo');
+    if (oneTable) this.db.exec('ALTER TABLE price_values RENAME TO price_values_old');
     this.db.exec(`
       PRAGMA journal_mode = WAL;
       CREATE TABLE IF NOT EXISTS price_alerts (
@@ -47,27 +55,34 @@ export class AlertsService implements OnModuleInit {
         listing_id TEXT NOT NULL,
         PRIMARY KEY (alert_id, listing_id)
       );
-      -- what each currency item is worth, in whatever unit alert prices are written in
+      -- what each currency item is worth per combo, in whatever unit that combo's alert prices are written in
       CREATE TABLE IF NOT EXISTS price_values (
-        name  TEXT PRIMARY KEY,
-        value REAL NOT NULL
+        combo TEXT NOT NULL,
+        name  TEXT NOT NULL,
+        value REAL NOT NULL,
+        PRIMARY KEY (combo, name)
       );
     `);
-    if (seedValues) for (const [name, value] of SEED_VALUES) this.setValue(name, value);
+    if (oneTable) {
+      const old = this.db.prepare('SELECT name, value FROM price_values_old').all() as { name: string; value: number }[];
+      for (const combo of COMBOS) for (const v of old) this.setValue(combo, v.name, v.value);
+      this.db.exec('DROP TABLE price_values_old');
+    }
+    if (seedValues) for (const combo of COMBOS) for (const [name, value] of SEED_VALUES) this.setValue(combo, name, value);
   }
 
   listValues(): PriceValue[] {
-    return this.db.prepare('SELECT name, value FROM price_values ORDER BY value DESC').all() as any;
+    return this.db.prepare('SELECT combo, name, value FROM price_values ORDER BY combo, value DESC').all() as any;
   }
 
   // Adds or updates; name must be the exact Traderie item name, e.g. "Ber Rune"
-  setValue(name: string, value: number) {
-    this.db.prepare('INSERT INTO price_values (name, value) VALUES (?, ?) ON CONFLICT (name) DO UPDATE SET value = excluded.value')
-      .run(name, value);
+  setValue(combo: string, name: string, value: number) {
+    this.db.prepare(`INSERT INTO price_values (combo, name, value) VALUES (?, ?, ?)
+      ON CONFLICT (combo, name) DO UPDATE SET value = excluded.value`).run(combo, name, value);
   }
 
-  removeValue(name: string): boolean {
-    return this.db.prepare('DELETE FROM price_values WHERE name = ?').run(name).changes > 0;
+  removeValue(combo: string, name: string): boolean {
+    return this.db.prepare('DELETE FROM price_values WHERE combo = ? AND name = ?').run(combo, name).changes > 0;
   }
 
   list(): Alert[] {
@@ -109,11 +124,12 @@ export class AlertsService implements OnModuleInit {
       const hits: string[] = [];
       const seen = this.db.prepare('SELECT 1 FROM alert_hits WHERE alert_id = ? AND listing_id = ?');
       const record: [number, string][] = [];
-      const values = new Map(this.listValues().map((v) => [v.name, v.value]));
+      const values = new Map(COMBOS.map((c) => [c, new Map<string, number>()]));
+      for (const v of this.listValues()) values.get(v.combo)?.set(v.name, v.value);
       for (const a of this.list()) {
         try {
           for (const l of await this.fetch(a.item, a)) {
-            const value = matchAlert(a, l, values);
+            const value = matchAlert(a, l, values.get(comboOf(a))!);
             if (value === null || seen.get(a.id, String(l.id))) continue;
             hits.push(formatHit(a, l, value));
             record.push([a.id, String(l.id)]);
@@ -137,7 +153,7 @@ export class AlertsService implements OnModuleInit {
   }
 
   private async fetch(search: string, combo: { ladder: boolean; mode: 'sc' | 'hc' }): Promise<RawListing[]> {
-    const res = await this.traderie.fetchListings(search, 0, combo) as { listings?: RawListing[] };
+    const res = await this.traderie.fetchListings(search, 0, combo, 'alerts') as { listings?: RawListing[] };
     return res.listings ?? [];
   }
 }
