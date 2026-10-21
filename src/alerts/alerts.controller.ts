@@ -1,6 +1,6 @@
 import { BadGatewayException, BadRequestException, Body, Controller, Delete, Get, NotFoundException, Param, Patch, Post, Put, Query } from '@nestjs/common';
 import { AlertsService, COMBOS, NewAlert } from './alerts.service';
-import { Condition } from './match';
+import { Condition, channelOf } from './match';
 
 // Under prices/ so d2r-service's admin proxy reaches it like the tracked list
 @Controller('prices')
@@ -24,7 +24,7 @@ export class AlertsController {
     return res;
   }
 
-  // Body { item, max_value, ladder?: true, mode?: 'sc', conditions?: Condition[] }; condition id/name/type come from
+  // Body { item, max_value, ladder?: true, mode?: 'sc', conditions?: Condition[], recipients?: string[] }; condition id/name/type come from
   // GET alerts/props, e.g. { id: 520, name: '+{{value}}% Faster Cast Rate', type: 'number', min: 35 }
   @Post('alerts')
   async add(@Body() body?: Record<string, unknown>) {
@@ -80,6 +80,10 @@ export class AlertsController {
     if (!search) throw new BadRequestException('item is required');
     if (typeof max_value !== 'number' || !(max_value > 0)) throw new BadRequestException('max_value must be a positive number');
     const conditions = parseConditions(body?.conditions ?? []);
+    const recipients = body?.recipients ?? [];
+    if (!Array.isArray(recipients) || !recipients.every((r) => typeof r === 'string' && channelOf(r))) {
+      throw new BadRequestException('recipients must be LINE ids (U/C/R + 32 hex), tg:<chat id> or Discord webhook URLs');
+    }
     const item = await this.svc.resolveItem(search).catch((err: Error) => {
       throw new BadGatewayException(`traderie lookup failed: ${err.message}`);
     });
@@ -91,6 +95,7 @@ export class AlertsController {
       mode: body?.mode === 'hc' ? 'hc' : 'sc',
       max_value,
       conditions,
+      recipients: [...new Set(recipients as string[])],
     };
   }
 }

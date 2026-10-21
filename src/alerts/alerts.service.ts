@@ -4,7 +4,7 @@ import { mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { TraderieService } from '../traderie/traderie.service';
-import { Alert, PropDef, RawListing, SchemaProp, alertQuery, listingProps, matchAlert, propCatalog, summarizeProps } from './match';
+import { Alert, PropDef, RawListing, SchemaProp, alertQuery, byRecipient, channelOf, listingProps, matchAlert, propCatalog, recipientLabel, summarizeProps } from './match';
 
 export type NewAlert = Omit<Alert, 'id'>;
 
@@ -43,6 +43,10 @@ export class AlertsService implements OnModuleInit {
     if (oneTable) this.db.exec('ALTER TABLE price_values RENAME TO price_values_old');
     // The first alerts matched property names locally and had no item id; their conditions can't be turned
     // into Traderie filters, so an empty table is replaced and a non-empty one set aside for re-entry
+    // Hits used to be one per alert and listing, all pushed to LINE_ALERT_TO; they become that recipient's
+    const hitCols = this.db.prepare('PRAGMA table_info(alert_hits)').all() as { name: string }[];
+    const oneRecipientHits = hitCols.length > 0 && !hitCols.some((c) => c.name === 'recipient');
+    if (oneRecipientHits) this.db.exec('ALTER TABLE alert_hits RENAME TO alert_hits_v1');
     const alertCols = this.db.prepare('PRAGMA table_info(price_alerts)').all() as { name: string }[];
     if (alertCols.length && !alertCols.some((c) => c.name === 'item_id')) {
       const rows = (this.db.prepare('SELECT COUNT(*) AS n FROM price_alerts').get() as { n: number }).n;
@@ -58,13 +62,15 @@ export class AlertsService implements OnModuleInit {
         ladder     INTEGER NOT NULL,
         mode       TEXT NOT NULL,
         max_value  REAL NOT NULL,
-        conditions TEXT NOT NULL
+        conditions TEXT NOT NULL,
+        recipients TEXT NOT NULL DEFAULT '[]'
       );
-      -- listings already notified, so each one is pushed once per alert
+      -- listings already notified, so each one is pushed once per alert and recipient
       CREATE TABLE IF NOT EXISTS alert_hits (
         alert_id   INTEGER NOT NULL,
         listing_id TEXT NOT NULL,
-        PRIMARY KEY (alert_id, listing_id)
+        recipient  TEXT NOT NULL,
+        PRIMARY KEY (alert_id, listing_id, recipient)
       );
       -- what each currency item is worth per combo, in whatever unit that combo's alert prices are written in
       CREATE TABLE IF NOT EXISTS price_values (
@@ -74,6 +80,13 @@ export class AlertsService implements OnModuleInit {
         PRIMARY KEY (combo, name)
       );
     `);
+    if (!(this.db.prepare('PRAGMA table_info(price_alerts)').all() as { name: string }[]).some((c) => c.name === 'recipients')) {
+      this.db.exec("ALTER TABLE price_alerts ADD COLUMN recipients TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (oneRecipientHits) {
+      this.db.prepare('INSERT INTO alert_hits SELECT alert_id, listing_id, ? FROM alert_hits_v1').run(process.env.LINE_ALERT_TO ?? '');
+      this.db.exec('DROP TABLE alert_hits_v1');
+    }
     if (oneTable) {
       const old = this.db.prepare('SELECT name, value FROM price_values_old').all() as { name: string; value: number }[];
       for (const combo of COMBOS) for (const v of old) this.setValue(combo, v.name, v.value);
@@ -98,21 +111,22 @@ export class AlertsService implements OnModuleInit {
 
   list(): Alert[] {
     return this.db.prepare('SELECT * FROM price_alerts ORDER BY id').all()
-      .map((r: any) => ({ ...r, ladder: !!r.ladder, conditions: JSON.parse(r.conditions) }));
+      .map((r: any) => ({ ...r, ladder: !!r.ladder, conditions: JSON.parse(r.conditions), recipients: JSON.parse(r.recipients) }));
   }
 
   add(a: NewAlert): Alert {
     const { id } = this.db.prepare(
-      'INSERT INTO price_alerts (item, item_id, ladder, mode, max_value, conditions) VALUES (?, ?, ?, ?, ?, ?) RETURNING id')
-      .get(a.item, a.item_id, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.conditions)) as { id: number };
+      'INSERT INTO price_alerts (item, item_id, ladder, mode, max_value, conditions, recipients) VALUES (?, ?, ?, ?, ?, ?, ?) RETURNING id')
+      .get(a.item, a.item_id, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.conditions), JSON.stringify(a.recipients)) as { id: number };
     return { id, ...a };
   }
 
-  // Listings already notified stay notified, so tightening an alert doesn't repeat old hits
+  // Listings already notified stay notified, so tightening an alert doesn't repeat old hits; a newly added
+  // recipient gets the listings that still match
   update(id: number, a: NewAlert): Alert | null {
     const changed = this.db.prepare(
-      'UPDATE price_alerts SET item = ?, item_id = ?, ladder = ?, mode = ?, max_value = ?, conditions = ? WHERE id = ?')
-      .run(a.item, a.item_id, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.conditions), id).changes;
+      'UPDATE price_alerts SET item = ?, item_id = ?, ladder = ?, mode = ?, max_value = ?, conditions = ?, recipients = ? WHERE id = ?')
+      .run(a.item, a.item_id, a.ladder ? 1 : 0, a.mode, a.max_value, JSON.stringify(a.conditions), JSON.stringify(a.recipients), id).changes;
     return changed ? { id, ...a } : null;
   }
 
@@ -164,9 +178,9 @@ export class AlertsService implements OnModuleInit {
     if (this.running) return;
     this.running = true;
     try {
-      const hits: string[] = [];
-      const seen = this.db.prepare('SELECT 1 FROM alert_hits WHERE alert_id = ? AND listing_id = ?');
-      const record: [number, string][] = [];
+      const hits: { alert: number; listing: string; to: string[]; text: string }[] = [];
+      const seen = this.db.prepare('SELECT 1 FROM alert_hits WHERE alert_id = ? AND listing_id = ? AND recipient = ?');
+      const fallback = process.env.LINE_ALERT_TO;
       const values = new Map(COMBOS.map((c) => [c, new Map<string, number>()]));
       for (const v of this.listValues()) values.get(v.combo)?.set(v.name, v.value);
       for (const a of this.list()) {
@@ -174,9 +188,12 @@ export class AlertsService implements OnModuleInit {
           const res = await this.traderie.fetchItemListings(a.item_id, alertQuery(a), 'alerts') as { listings?: RawListing[] };
           for (const l of res.listings ?? []) {
             const value = matchAlert(a, l, values.get(comboOf(a))!);
-            if (value === null || seen.get(a.id, String(l.id))) continue;
-            hits.push(formatHit(a, l, value));
-            record.push([a.id, String(l.id)]);
+            if (value === null) continue;
+            const all = a.recipients.length ? a.recipients : fallback ? [fallback] : [];
+            if (!all.length) throw new Error('no recipients and LINE_ALERT_TO not set');
+            const to = all.filter((r) => !seen.get(a.id, String(l.id), r));
+            if (!to.length) continue;
+            hits.push({ alert: a.id, listing: String(l.id), to, text: formatHit(a, l, value) });
           }
         } catch (err) {
           this.log.error(`Alert #${a.id} [${a.item}] failed: ${(err as Error).message}`);
@@ -184,11 +201,23 @@ export class AlertsService implements OnModuleInit {
         await new Promise((r) => setTimeout(r, 3000));
       }
       if (!hits.length) return;
-      // Only remember hits once LINE accepted them, so a failed push is retried next run
-      await pushLine(hits.join('\n\n'));
-      const insert = this.db.prepare('INSERT OR IGNORE INTO alert_hits (alert_id, listing_id) VALUES (?, ?)');
-      for (const [aid, lid] of record) insert.run(aid, lid);
-      this.log.log(`Pushed ${hits.length} alert hit(s)`);
+      const failed = new Set<string>();
+      for (const [to, texts] of byRecipient(hits)) {
+        await notify(to, texts.join('\n\n')).catch((err: Error) => {
+          failed.add(to);
+          this.log.error(`Push to ${recipientLabel(to)} failed: ${err.message}`);
+        });
+      }
+      // Only remember a hit for the recipients whose push went through, so a failed one is retried next run
+      const insert = this.db.prepare('INSERT OR IGNORE INTO alert_hits (alert_id, listing_id, recipient) VALUES (?, ?, ?)');
+      let sent = 0;
+      for (const h of hits) {
+        for (const to of h.to.filter((t) => !failed.has(t))) {
+          insert.run(h.alert, h.listing, to);
+          sent++;
+        }
+      }
+      this.log.log(`Pushed ${sent} alert hit(s) to ${byRecipient(hits).size - failed.size} recipient(s)`);
     } catch (err) {
       this.log.error(`Alert check failed: ${(err as Error).message}`);
     } finally {
@@ -210,15 +239,22 @@ function formatHit(a: Alert, l: RawListing, value: number): string {
   ].filter(Boolean).join('\n');
 }
 
-async function pushLine(text: string) {
-  const token = process.env.LINE_CHANNEL_ACCESS_TOKEN;
-  const to = process.env.LINE_ALERT_TO;
-  if (!token || !to) throw new Error(`LINE_CHANNEL_ACCESS_TOKEN / LINE_ALERT_TO not set; would push:\n${text}`);
-  const res = await fetch('https://api.line.me/v2/bot/message/push', {
-    method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${token}` },
-    // LINE caps a text message at 5000 characters
-    body: JSON.stringify({ to, messages: [{ type: 'text', text: text.slice(0, 5000) }] }),
-  });
-  if (!res.ok) throw new Error(`LINE push ${res.status}: ${await res.text()}`);
+// Each channel caps a text message: LINE 5000 characters, Telegram 4096, Discord 2000
+async function notify(to: string, text: string) {
+  const channel = channelOf(to);
+  const env = (name: string) => {
+    const v = process.env[name];
+    if (!v) throw new Error(`${name} not set; would push:\n${text}`);
+    return v;
+  };
+  const [url, headers, body] =
+    channel === 'telegram'
+      ? [`https://api.telegram.org/bot${env('TELEGRAM_BOT_TOKEN')}/sendMessage`, {},
+        { chat_id: to.slice(3), text: text.slice(0, 4096), disable_web_page_preview: true }]
+      : channel === 'discord'
+        ? [to, {}, { content: text.slice(0, 2000) }]
+        : ['https://api.line.me/v2/bot/message/push', { authorization: `Bearer ${env('LINE_CHANNEL_ACCESS_TOKEN')}` },
+          { to, messages: [{ type: 'text', text: text.slice(0, 5000) }] }];
+  const res = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...headers }, body: JSON.stringify(body) });
+  if (!res.ok) throw new Error(`${channel ?? 'line'} push ${res.status}: ${await res.text()}`);
 }

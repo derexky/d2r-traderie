@@ -18,6 +18,31 @@ export interface Alert {
   // Same unit as this combo's price_values
   max_value: number;
   conditions: Condition[];
+  // See RECIPIENT; empty means the default LINE_ALERT_TO
+  recipients: string[];
+}
+
+// The channel is told by the recipient's form, so one alert can mix them
+export const RECIPIENT = {
+  // user / group / room id
+  line: /^[UCR][0-9a-f]{32}$/,
+  // tg:<chat id> or tg:@channel
+  telegram: /^tg:(-?\d+|@\w{5,})$/,
+  discord: /^https:\/\/(discord|discordapp)\.com\/api\/webhooks\/\d+\/[\w-]+$/,
+};
+
+export const channelOf = (to: string) =>
+  (Object.keys(RECIPIENT) as (keyof typeof RECIPIENT)[]).find((k) => RECIPIENT[k].test(to));
+
+// For logs: a Discord webhook URL is its own secret
+export const recipientLabel = (to: string) =>
+  channelOf(to) === 'discord' ? `discord webhook ${to.split('/')[5]}` : to;
+
+// One message per recipient, holding every hit of the alerts they receive
+export function byRecipient(hits: { to: string[]; text: string }[]): Map<string, string[]> {
+  const out = new Map<string, string[]>();
+  for (const h of hits) for (const to of h.to) out.set(to, [...(out.get(to) ?? []), h.text]);
+  return out;
 }
 
 export interface RawListing {

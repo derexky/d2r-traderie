@@ -39,7 +39,7 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
 
 ## 低價通知
 
-用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性條件＋目標價」（`price_alerts` 表）。每 10 分鐘把每筆通知的條件組成 Traderie 的查詢參數，抓該物品**掛賣中**列表第一頁（由 Traderie 篩選，回來的都是符合條件的單），本機再驗一次條件、換算價格，≤ 目標就推 LINE（同一輪合併成一則，同一張單只通知一次，紀錄在 `alert_hits`）。
+用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性條件＋目標價」（`price_alerts` 表）。每 10 分鐘把每筆通知的條件組成 Traderie 的查詢參數，抓該物品**掛賣中**列表第一頁（由 Traderie 篩選，回來的都是符合條件的單），本機再驗一次條件、換算價格，≤ 目標就推 LINE（同一輪合併成一則，同一張單對同一收件人只通知一次，紀錄在 `alert_hits`）。
 
 - 價格換算用 `price_values` 表（d2r-admin「TR 物品價值」頁），Ladder/NL × SC/HC 每種組合各一套，通知用自己組合的那套：一組價格 = Σ 價值 × 數量，多組擇一取最便宜；不在表內的物品無法換算，該組略過。表第一次建立時四個組合都灌入 2026-10 的 Traderie Ladder SC 估價（Fal～Zod 符文），之後只看這張表
 - 通知用獨立的匿名 Chrome context 抓掛賣列表（不需登入），跟查價用的登入頁面分開，出錯重開時互不影響；第一次用到時才會開啟
@@ -47,7 +47,11 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
   - `GET /alerts/props?item=`：物品能篩選的所有屬性（id、名稱、類型、文字選項），附賣家實際填寫的出現率與值範圍（追蹤物品取已存的成交紀錄，其他即時抓最新一頁掛賣單）
   - `GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）
   - `GET /values`、`PUT/DELETE /values/:combo/:name`（combo = `ladder_sc`／`nonladder_sc`／`ladder_hc`／`nonladder_hc`）
-- 環境變數：`LINE_CHANNEL_ACCESS_TOKEN`（與 d2r-linebot 同一個）、`LINE_ALERT_TO`（接收者的 LINE userId）
+- 收件人：每筆通知各自設定（`recipients`，可多個、可混用），依格式判斷管道；同一輪同一收件人的命中合併成一則。沒設就推給 `LINE_ALERT_TO`。`alert_hits` 按收件人分開記錄：推送失敗的收件人下次重推，其他人不會重複收到；新加入的收件人會收到目前仍符合的單
+  - LINE：userId／groupId／roomId（`U`／`C`／`R` + 32 碼）
+  - Telegram：`tg:<chat id>` 或 `tg:@頻道名稱`（bot 要先在對話裡）
+  - Discord：頻道的 Webhook URL（`https://discord.com/api/webhooks/...`）
+- 環境變數：`LINE_CHANNEL_ACCESS_TOKEN`（與 d2r-linebot 同一個）、`LINE_ALERT_TO`（預設收件人的 LINE userId）、`TELEGRAM_BOT_TOKEN`（用到 Telegram 才需要）
 
 ### Traderie 屬性篩選參數
 

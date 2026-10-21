@@ -1,7 +1,7 @@
 // Run after a build: npm test
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { Alert, RawListing, alertQuery, listingValue, matchAlert, propCatalog, summarizeProps } from './match.js';
+import { Alert, RawListing, alertQuery, byRecipient, channelOf, listingValue, matchAlert, propCatalog, summarizeProps } from './match.js';
 
 const listing = (prices: RawListing['prices'], props: [string, unknown][] = []): RawListing => ({
   id: 1,
@@ -25,7 +25,23 @@ const alert: Alert = {
     { id: 1197, name: BASE, type: 'string', values: ['Monarch', 'Phase Blade'] },
     { id: 738, name: 'Ethereal', type: 'bool', value: false },
   ],
+  recipients: [],
 };
+
+test('channelOf tells LINE, Telegram and Discord apart and rejects the rest', () => {
+  assert.equal(channelOf(`U${'a'.repeat(32)}`), 'line');
+  assert.equal(channelOf('tg:-1001234567890'), 'telegram');
+  assert.equal(channelOf('tg:@d2r_alerts'), 'telegram');
+  assert.equal(channelOf('https://discord.com/api/webhooks/123/abc-DEF_9'), 'discord');
+  for (const bad of ['U123', 'tg:', 'https://evil.com/api/webhooks/1/x', 'https://discord.com/api/webhooks/1/x?wait=1']) {
+    assert.equal(channelOf(bad), undefined, bad);
+  }
+});
+
+test('byRecipient: one message per recipient with all their hits', () => {
+  const got = byRecipient([{ to: ['U1', 'U2'], text: 'a' }, { to: ['U2'], text: 'b' }]);
+  assert.deepEqual([...got], [['U1', ['a']], ['U2', ['a', 'b']]]);
+});
 
 test('alertQuery: numbers by id, strings and bools by name', () => {
   assert.equal(
