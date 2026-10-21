@@ -50,6 +50,8 @@ export interface RawListing {
   // A string in listings fetched by item id
   item_id?: string | number;
   item?: { name?: string };
+  // How many of the item the listing sells for its price
+  amount?: number;
   prices?: { name?: string; quantity?: number; group?: number }[];
   properties?: { name?: string; property?: string; string?: string | null; number?: number | null; bool?: boolean | null }[];
 }
@@ -100,7 +102,7 @@ function meets(c: Condition, have: PropValue | null | undefined): boolean {
   return c.type === 'string' ? c.values.includes(have as string) : have === c.value;
 }
 
-// The listing's value when it satisfies the alert, else null. Traderie already filtered by the same
+// The listing's value per item when it satisfies the alert, else null. Traderie already filtered by the same
 // conditions; checking again guards against it silently ignoring a param
 export function matchAlert(a: Alert, l: RawListing, values: Map<string, number>): number | null {
   if (l.item_id !== undefined && String(l.item_id) !== String(a.item_id)) return null;
@@ -108,7 +110,8 @@ export function matchAlert(a: Alert, l: RawListing, values: Map<string, number>)
   // Traderie's prop_Ladder=false filter also returns listings without a Ladder prop
   if (props.Ladder !== a.ladder || props.Mode !== (a.mode === 'hc' ? 'hardcore' : 'softcore')) return null;
   if (!a.conditions.every((c) => meets(c, props[c.name]))) return null;
-  const value = listingValue(l, values);
+  const total = listingValue(l, values);
+  const value = total === null ? null : total / (l.amount || 1);
   return value !== null && value <= a.max_value ? value : null;
 }
 

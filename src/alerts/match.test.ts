@@ -81,6 +81,8 @@ test('matchAlert', () => {
   const capped: Alert = { ...alert, conditions: [{ id: 520, name: FCR, type: 'number', max: 30 }] };
   assert.equal(matchAlert(capped, listing(vex, [[FCR, 25]]), values), 0.5, 'max only');
   assert.equal(matchAlert(capped, listing(vex, [[FCR, 35]]), values), null, 'above max');
+  const bundle = { ...listing([{ name: 'Ber Rune', quantity: 3 }], ok), amount: 2 };
+  assert.equal(matchAlert({ ...alert, max_value: 6 }, bundle, values), 5.25, 'priced per item');
 });
 
 test('summarizeProps', () => {

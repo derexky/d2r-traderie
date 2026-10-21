@@ -233,7 +233,7 @@ function formatHit(a: Alert, l: RawListing, value: number): string {
     (name.includes('{{value}}') ? name.replace('{{value}}', String(props[name])) : `${name}: ${props[name]}`)).join(' / ');
   return [
     `🔔 ${a.item} ${a.ladder ? 'Ladder' : 'NL'} ${a.mode.toUpperCase()}：${+value.toFixed(3)} ≤ ${a.max_value}`,
-    price,
+    (l.amount ?? 1) > 1 ? `${l.amount} 個共 ${price}` : price,
     stats,
     `https://traderie.com/diablo2resurrected/listing/${l.id}`,
   ].filter(Boolean).join('\n');
