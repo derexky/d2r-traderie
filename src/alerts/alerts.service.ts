@@ -206,7 +206,7 @@ export class AlertsService implements OnModuleInit {
 
   // ponytail: one fetch per alert, newest page only; Traderie already filters by the conditions, so that page
   // holds only candidates. Fetch more pages if hits start getting missed
-  @Cron(CronExpression.EVERY_10_MINUTES)
+  @Cron(CronExpression.EVERY_5_MINUTES)
   async check() {
     if (this.running) return;
     this.running = true;

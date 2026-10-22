@@ -39,7 +39,7 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
 
 ## 低價通知
 
-用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性條件＋目標價」（`price_alerts` 表）。每 10 分鐘把每筆通知的條件組成 Traderie 的查詢參數，抓該物品**掛賣中**列表第一頁（由 Traderie 篩選，回來的都是符合條件的單），本機再驗一次條件、換算價格（一張單賣多個的按每個單價算），≤ 目標就推 LINE（同一輪合併成一則，同一張單對同一收件人只通知一次，紀錄在 `alert_hits`）。
+用 d2r-admin 的「TR 低價通知」頁設定「物品＋屬性條件＋目標價」（`price_alerts` 表）。每 5 分鐘把每筆通知的條件組成 Traderie 的查詢參數，抓該物品**掛賣中**列表第一頁（由 Traderie 篩選，回來的都是符合條件的單），本機再驗一次條件、換算價格（一張單賣多個的按每個單價算），≤ 目標就推 LINE（同一輪合併成一則，同一張單對同一收件人只通知一次，紀錄在 `alert_hits`）。
 
 - 價格換算用 `price_values` 表（d2r-admin「TR 物品價值」頁），Ladder/NL × SC/HC 每種組合各一套，通知用自己組合的那套：一組價格 = Σ 價值 × 數量，多組擇一取最便宜；不在表內的物品無法換算，該組略過。表第一次建立時四個組合都灌入 2026-10 的 Traderie Ladder SC 估價（Fal～Zod 符文），之後只看這張表
 - 通知用獨立的匿名 Chrome context 抓掛賣列表（不需登入），跟查價用的登入頁面分開，出錯重開時互不影響；第一次用到時才會開啟
