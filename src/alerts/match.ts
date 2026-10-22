@@ -50,8 +50,9 @@ export interface RawListing {
   // A string in listings fetched by item id
   item_id?: string | number;
   item?: { name?: string };
-  // How many of the item the listing sells for its price
+  // How many of the item the listing sells: for its whole price, or each at its price when `stock` is set
   amount?: number;
+  stock?: boolean;
   prices?: { name?: string; quantity?: number; group?: number }[];
   properties?: { name?: string; property?: string; string?: string | null; number?: number | null; bool?: boolean | null }[];
 }
@@ -111,7 +112,7 @@ export function matchAlert(a: Alert, l: RawListing, values: Map<string, number>)
   if (props.Ladder !== a.ladder || props.Mode !== (a.mode === 'hc' ? 'hardcore' : 'softcore')) return null;
   if (!a.conditions.every((c) => meets(c, props[c.name]))) return null;
   const total = listingValue(l, values);
-  const value = total === null ? null : total / (l.amount || 1);
+  const value = total === null ? null : l.stock ? total : total / (l.amount || 1);
   return value !== null && value <= a.max_value ? value : null;
 }
 
