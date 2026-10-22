@@ -14,6 +14,8 @@ export const comboOf = (a: Pick<Alert, 'ladder' | 'mode'>) => `${a.ladder ? 'lad
 
 export interface PriceValue { combo: string; name: string; value: number }
 
+export interface LineContact { id: string; type: 'user' | 'group' | 'room'; name: string | null; seen_at: string }
+
 export interface ItemRef { id: number; name: string; slug: string }
 
 // Traderie's ladder SC valuation as of 2026-10, used for every combo when price_values is first created
@@ -79,6 +81,13 @@ export class AlertsService implements OnModuleInit {
         value REAL NOT NULL,
         PRIMARY KEY (combo, name)
       );
+      -- LINE users and groups that talked to d2r-linebot, so their ids can be picked as alert recipients
+      CREATE TABLE IF NOT EXISTS line_contacts (
+        id      TEXT PRIMARY KEY,
+        type    TEXT NOT NULL,
+        name    TEXT,
+        seen_at TEXT NOT NULL
+      );
     `);
     if (!(this.db.prepare('PRAGMA table_info(price_alerts)').all() as { name: string }[]).some((c) => c.name === 'recipients')) {
       this.db.exec("ALTER TABLE price_alerts ADD COLUMN recipients TEXT NOT NULL DEFAULT '[]'");
@@ -107,6 +116,17 @@ export class AlertsService implements OnModuleInit {
 
   removeValue(combo: string, name: string): boolean {
     return this.db.prepare('DELETE FROM price_values WHERE combo = ? AND name = ?').run(combo, name).changes > 0;
+  }
+
+  listContacts(): LineContact[] {
+    return this.db.prepare('SELECT * FROM line_contacts ORDER BY seen_at DESC').all() as any;
+  }
+
+  // Keeps the last known name when this one is missing (e.g. a profile lookup failed)
+  saveContact(c: Omit<LineContact, 'seen_at'>) {
+    this.db.prepare(`INSERT INTO line_contacts (id, type, name, seen_at) VALUES (?, ?, ?, datetime('now'))
+      ON CONFLICT (id) DO UPDATE SET type = excluded.type, name = COALESCE(excluded.name, name), seen_at = excluded.seen_at`)
+      .run(c.id, c.type, c.name);
   }
 
   list(): Alert[] {

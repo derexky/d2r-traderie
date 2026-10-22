@@ -52,6 +52,22 @@ export class AlertsController {
     return { message: 'check started' };
   }
 
+  @Get('contacts')
+  listContacts() {
+    return this.svc.listContacts();
+  }
+
+  // Called by d2r-linebot for each webhook event; body { id, type: 'user' | 'group' | 'room', name? }
+  @Post('contacts')
+  saveContact(@Body() body?: Record<string, unknown>) {
+    const { id, type, name } = body ?? {};
+    if (typeof id !== 'string' || channelOf(id) !== 'line') throw new BadRequestException('id must be a LINE id (U/C/R + 32 hex)');
+    if (type !== 'user' && type !== 'group' && type !== 'room') throw new BadRequestException('type must be user, group or room');
+    if (name !== undefined && name !== null && typeof name !== 'string') throw new BadRequestException('name must be a string');
+    this.svc.saveContact({ id, type, name: name || null });
+    return { id };
+  }
+
   @Get('values')
   listValues() {
     return this.svc.listValues();

@@ -48,7 +48,7 @@ ssh myhost 'cat > ~/d2r-traderie-data/traderie-auth.json' < data/traderie-auth.j
   - `GET/POST /alerts`、`PATCH/DELETE /alerts/:id`、`POST /alerts/check`（手動跑一次）
   - `GET /values`、`PUT/DELETE /values/:combo/:name`（combo = `ladder_sc`／`nonladder_sc`／`ladder_hc`／`nonladder_hc`）
 - 收件人：每筆通知各自設定（`recipients`，可多個、可混用），依格式判斷管道；同一輪同一收件人的命中合併成一則。沒設就推給 `LINE_ALERT_TO`。`alert_hits` 按收件人分開記錄：推送失敗的收件人下次重推，其他人不會重複收到；新加入的收件人會收到目前仍符合的單
-  - LINE：userId／groupId／roomId（`U`／`C`／`R` + 32 碼）
+  - LINE：userId／groupId／roomId（`U`／`C`／`R` + 32 碼）。LINE 不提供頁面查別人的 id，由 d2r-linebot 在每次互動時呼叫 `POST /contacts`（`{ id, type, name }`）記進 `line_contacts` 表，`GET /contacts` 列出（d2r-admin「LINE 好友／群組」頁、通知收件人下拉選單）
   - Telegram：`tg:<chat id>` 或 `tg:@頻道名稱`（bot 要先在對話裡）
   - Discord：頻道的 Webhook URL（`https://discord.com/api/webhooks/...`）
 - 環境變數：`LINE_CHANNEL_ACCESS_TOKEN`（與 d2r-linebot 同一個）、`LINE_ALERT_TO`（預設收件人的 LINE userId）、`TELEGRAM_BOT_TOKEN`（用到 Telegram 才需要）
