@@ -155,14 +155,16 @@ export class AlertsService implements OnModuleInit {
     return this.db.prepare('DELETE FROM price_alerts WHERE id = ?').run(id).changes > 0;
   }
 
-  // The Traderie item an English name (any casing) refers to, with the newest ladder SC selling listings
-  // of it; null when no active listing matches
+  // The Traderie item an English name (any casing) or slug (e.g. grand-charm) refers to, with the newest
+  // ladder SC selling listings of it; null when no active listing matches
   private async resolve(search: string): Promise<{ item: ItemRef; listings: RawListing[] } | null> {
     const lower = search.toLowerCase();
-    const res = await this.traderie.fetchListings(search, 0, { ladder: true, mode: 'sc' }, 'alerts') as {
+    // a slug has no spaces; search it as words, since Traderie's search matches names
+    const query = search.includes(' ') ? search : search.replace(/-/g, ' ');
+    const res = await this.traderie.fetchListings(query, 0, { ladder: true, mode: 'sc' }, 'alerts') as {
       listings?: (RawListing & { item?: { id?: number; name?: string; slug?: string } })[];
     };
-    const listings = (res.listings ?? []).filter((l) => l.item?.name?.toLowerCase() === lower);
+    const listings = (res.listings ?? []).filter((l) => l.item?.name?.toLowerCase() === lower || l.item?.slug === lower);
     const it = listings[0]?.item;
     return it?.id && it.name && it.slug ? { item: { id: it.id, name: it.name, slug: it.slug }, listings } : null;
   }
