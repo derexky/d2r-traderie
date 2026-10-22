@@ -209,9 +209,16 @@ export class TraderieService implements OnModuleInit, OnModuleDestroy {
 
   // The item's filterable properties (id, name, type, string options); `slug` comes from a listing's item
   async fetchItemSchema(slug: string, session: SessionName = 'main') {
+    return (await this.fetchItem(slug, session))?.properties ?? [];
+  }
+
+  // The item a slug names (id, name, slug, filterable properties); undefined when there is none
+  async fetchItem(slug: string, session: SessionName = 'main') {
     const res = await this.sessions[session].fetchApi(
-      `/api/diablo2resurrected/items?id=${encodeURIComponent(slug)}&properties=`) as { items?: { properties?: unknown[] }[] };
-    return res.items?.[0]?.properties ?? [];
+      `/api/diablo2resurrected/items?id=${encodeURIComponent(slug)}&properties=`) as {
+      items?: { id?: number | string; name?: string; slug?: string; properties?: unknown[] }[];
+    };
+    return res.items?.[0];
   }
 
   async fetchCompletedListings(search: string, page = 0, filters: ListingFilters = {}) {

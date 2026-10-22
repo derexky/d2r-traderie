@@ -156,9 +156,20 @@ export class AlertsService implements OnModuleInit {
   }
 
   // The Traderie item an English name (any casing) or slug (e.g. grand-charm) refers to, with the newest
-  // ladder SC selling listings of it; null when no active listing matches
-  private async resolve(search: string): Promise<{ item: ItemRef; listings: RawListing[] } | null> {
+  // ladder SC selling listings of it (and its schema when already fetched); null when nothing matches.
+  // Looking the slug up and listing by item id takes ~2 s; Traderie's name search can take 15-50 s
+  private async resolve(search: string): Promise<{ item: ItemRef; listings: RawListing[]; schema?: SchemaProp[] } | null> {
     const lower = search.toLowerCase();
+    const slug = lower.replace(/'/g, '').replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+    const found = await this.traderie.fetchItem(slug, 'alerts').catch(() => undefined);
+    if (found?.id && found.name && found.slug && (found.name.toLowerCase() === lower || found.slug === lower)) {
+      const item = { id: Number(found.id), name: found.name, slug: found.slug };
+      const res = await this.traderie.fetchItemListings(item.id, alertQuery({ ladder: true, mode: 'sc', conditions: [] }), 'alerts') as {
+        listings?: RawListing[];
+      };
+      return { item, listings: res.listings ?? [], schema: (found.properties ?? []) as SchemaProp[] };
+    }
+    // ponytail: name search fallback for names whose slug isn't the plain one; slow, but rare
     // a slug has no spaces; search it as words, since Traderie's search matches names
     const query = search.includes(' ') ? search : search.replace(/-/g, ' ');
     const res = await this.traderie.fetchListings(query, 0, { ladder: true, mode: 'sc' }, 'alerts') as {
@@ -180,7 +191,7 @@ export class AlertsService implements OnModuleInit {
     const found = await this.resolve(search);
     if (!found) return null;
     const { item, listings } = found;
-    const schema = await this.traderie.fetchItemSchema(item.slug, 'alerts') as SchemaProp[];
+    const schema = found.schema ?? await this.traderie.fetchItemSchema(item.slug, 'alerts') as SchemaProp[];
     const stored = (this.db.prepare('SELECT props FROM price_listings WHERE item = ?').all(item.name) as { props: string }[])
       .map((r) => JSON.parse(r.props));
     const sample = stored.length ? stored : listings.map(listingProps);
