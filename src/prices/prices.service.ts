@@ -172,7 +172,9 @@ export class PricesService implements OnModuleInit {
       newListings.push({
         id,
         completed_at: ts && !isNaN(ts) ? ts : null,
-        prices: (listing.prices ?? [])
+        // ponytail: a lot sold for one price (21 Ist for 1 Jah) has no clean per-item price, so it is left out
+        // of the price stats; with `stock` the price is already each. Rows stored before this age out
+        prices: (!listing.stock && (listing.amount ?? 1) > 1 ? [] : listing.prices ?? [])
           .filter((p) => p.name)
           .map((p) => ({ name: p.name!, quantity: p.quantity ?? 1, group: p.group ?? 0 })),
         props: extractProps(listing),
@@ -322,6 +324,8 @@ interface RawListing {
   id?: string | number;
   item?: { name?: string };
   updated_at?: string;
+  amount?: number;
+  stock?: boolean;
   prices?: { name?: string; value?: number; quantity?: number; group?: number }[];
   properties?: RawProp[];
 }
